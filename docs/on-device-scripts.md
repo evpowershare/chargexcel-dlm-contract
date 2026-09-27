@@ -20,15 +20,16 @@ paste a script into a unit, test it on your own computer with
 
 On the unit's web portal, open **`/dlm`** (Load Management Plugins):
 
-1. **Connector** card: choose *On-device script* and press **Switch**. Only
+1. **What controls the car?**: choose *My own script* and press **Switch**. Only
    one optional connector runs at a time (none, on-device script, or the
    built-in Tesla connector), because each one's memory is set aside once
    when the unit starts. Switching restarts ChargeXcel for about 10 seconds.
    The relay opens and re-closes on its normal schedule.
 2. **On-device script**: paste the script and press **Install and run**.
-   It compiles on the unit and ticks straight away. The status table shows
-   the result, the last error (with a line number), and the memory peak.
-3. **Script secrets**: enter any API keys or account names the script needs.
+   It compiles on the unit and ticks straight away. The panel shows when it
+   last ran, the last error (with a line number) and its last log line;
+   memory figures are under *Technical details*.
+3. **Secrets**: enter any API keys or account names the script needs.
    The script reads them with `dlm.secret("name")`. Values are never shown
    again. Never put a secret in the script text.
 
@@ -90,7 +91,7 @@ Changing this map changes nothing outside the script.
 
 ### `dlm.secret(name)` → string or nil
 
-A value from the *Script secrets* card: up to four secrets, names up to 15
+A value from the script panel's *Secrets* section: up to four secrets, names up to 15
 characters, values up to 127. Returns `nil` if that name isn't set. Never
 `dlm.log()` a secret.
 

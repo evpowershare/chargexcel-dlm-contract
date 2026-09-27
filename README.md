@@ -50,8 +50,8 @@ from its own sensors whether zero plugins are running or ten. See
 
 A unit runs at most one on-device script. Off-board plugins work alongside
 it, and each has its own key. You choose between the on-device script, no
-connector, and ChargeXcel's **built-in Tesla connector** on the Connector card
-of the unit's `/dlm` page. Tesla support is part of the firmware, not a
+connector, and ChargeXcel's **built-in Tesla connector** under "What controls the car?"
+on the unit's `/dlm` page. Tesla support is part of the firmware, not a
 plugin.
 
 ## What's here
