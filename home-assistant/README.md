@@ -75,6 +75,14 @@ whether Home Assistant is running or not.
      sensors. ChargeXcel's current sensors can't tell exported power from
      imported, so that figure is not meaningful.
 7. **Restart Home Assistant.** The sensors fill in within about 10 seconds.
+   ChargeXcel shows up as 13 entities, not as a device, so you won't find it
+   on the Devices tab. Press **`e`** anywhere in Home Assistant and search
+   **chargexcel** to check they're all there:
+
+   <img src="images/entities.png" width="480"
+        alt="Home Assistant's entity search for 'chargexcel', listing all 13 ChargeXcel sensors and binary sensors.">
+
+   The same list is under **Settings → Devices & services → Entities**.
 8. **Optional:** in **Settings → Dashboards → Energy**, add
    `sensor.chargexcel_charging_station_energy` as an individual device.
 
