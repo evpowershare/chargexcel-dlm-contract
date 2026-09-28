@@ -1,0 +1,136 @@
+# ChargeXcel for Home Assistant -- a read-only package.
+#
+# Drop this file into your Home Assistant packages folder (see README.md in
+# this directory) and add two lines to secrets.yaml:
+#
+#   chargexcel_diagnostics_url: http://chargexcel-XXXX.local/api/diagnostics
+#   chargexcel_api_key: "<the key shown on your ChargeXcel's /api-key page>"
+#
+# (Keep the quotes: a key that happens to look like a number gets mangled
+# without them.)
+#
+# Needs ChargeXcel firmware that reports "schema": 3 or later on
+# /api/diagnostics. Older firmware still gives you the current and relay
+# sensors; the safety, headroom and firmware sensors show "unavailable".
+#
+# Everything here only reads. Home Assistant cannot switch ChargeXcel's relay
+# or change its limits -- ChargeXcel keeps protecting your service on its own
+# whether Home Assistant is running or not.
+
+rest:
+  - resource: !secret chargexcel_diagnostics_url
+    headers:
+      X-API-Key: !secret chargexcel_api_key
+    scan_interval: 10
+    timeout: 5
+    sensor:
+      - name: ChargeXcel service L1 current
+        unique_id: chargexcel_service_l1_current
+        value_template: "{{ value_json.ct.service_l1_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: ChargeXcel service L2 current
+        unique_id: chargexcel_service_l2_current
+        value_template: "{{ value_json.ct.service_l2_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: ChargeXcel charging station current
+        unique_id: chargexcel_charging_station_current
+        value_template: "{{ value_json.ct.evse_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      # The spare capacity ChargeXcel works out the charging station may
+      # use right now. "Unavailable" while ChargeXcel has no trustworthy figure
+      # (just booted, not yet commissioned, or a sensor fault).
+      - name: ChargeXcel headroom
+        unique_id: chargexcel_headroom
+        availability: >-
+          {{ value_json is defined and value_json.headroom is defined
+             and value_json.headroom.valid }}
+        value_template: "{{ value_json.headroom.amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      # What ChargeXcel is doing: RUNNING (normal), SHED_OFF (load shed,
+      # relay open), RECONNECT_PENDING, THERMAL_OFF, TRIP_LATCHED, ...
+      # See README.md for the full list.
+      - name: ChargeXcel safety state
+        unique_id: chargexcel_safety_state
+        availability: "{{ value_json is defined and value_json.safety is defined }}"
+        value_template: "{{ value_json.safety.state }}"
+        icon: mdi:shield-check
+      - name: ChargeXcel firmware
+        unique_id: chargexcel_firmware
+        availability: "{{ value_json is defined and value_json.version is defined }}"
+        value_template: "{{ value_json.version }}"
+        icon: mdi:chip
+    binary_sensor:
+      # On = the relay is closed and the charging station has power.
+      - name: ChargeXcel relay closed
+        unique_id: chargexcel_relay_closed
+        value_template: "{{ value_json.relay.energized }}"
+        device_class: power
+      # On = ChargeXcel's safety logic currently allows the relay to close.
+      - name: ChargeXcel relay permitted
+        unique_id: chargexcel_relay_permitted
+        availability: "{{ value_json is defined and value_json.safety is defined }}"
+        value_template: "{{ value_json.safety.relay_permitted }}"
+        icon: mdi:check-circle-outline
+      # On = the electrician's commissioning has been completed.
+      - name: ChargeXcel commissioned
+        unique_id: chargexcel_commissioned
+        value_template: "{{ value_json.electrician.valid }}"
+        icon: mdi:clipboard-check-outline
+
+# Power, worked out the same way ChargeXcel's own /energy page does it: each
+# service leg at 120 V; the charging station at the line-to-line voltage.
+# If your service is 120/208 V, change the 240 on the charging-station line
+# below to 208. With solar panels, the house figure is NOT meaningful (the
+# current sensors cannot tell export from import) -- delete it.
+template:
+  - sensor:
+      - name: ChargeXcel charging station power
+        unique_id: chargexcel_charging_station_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: "{{ has_value('sensor.chargexcel_charging_station_current') }}"
+        state: >-
+          {{ (states('sensor.chargexcel_charging_station_current') | float * 240) | round(0) }}
+      - name: ChargeXcel house power
+        unique_id: chargexcel_house_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        availability: >-
+          {{ has_value('sensor.chargexcel_service_l1_current')
+             and has_value('sensor.chargexcel_service_l2_current')
+             and has_value('sensor.chargexcel_charging_station_current') }}
+        state: >-
+          {% set legs = states('sensor.chargexcel_service_l1_current') | float
+                      + states('sensor.chargexcel_service_l2_current') | float %}
+          {% set station = states('sensor.chargexcel_charging_station_current') | float %}
+          {{ [120 * legs - 240 * station, 0] | max | round(0) }}
+
+# Energy (kWh) for Home Assistant's Energy dashboard, integrated from the
+# power sensors above. ChargeXcel keeps its own history too (/energy on the
+# unit, or /api/energy/export.csv); these are Home Assistant's own running
+# totals and start from zero the day you add them.
+sensor:
+  - platform: integration
+    name: ChargeXcel charging station energy
+    unique_id: chargexcel_charging_station_energy
+    source: sensor.chargexcel_charging_station_power
+    unit_prefix: k
+    round: 3
+    method: left
+  - platform: integration
+    name: ChargeXcel house energy
+    unique_id: chargexcel_house_energy
+    source: sensor.chargexcel_house_power
+    unit_prefix: k
+    round: 3
+    method: left

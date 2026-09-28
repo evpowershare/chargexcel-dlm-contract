@@ -70,6 +70,9 @@ plugin.
   with the same Berry VM and limits the unit uses.
 - [`reference-plugin/`](reference-plugin/): a complete off-board plugin in
   about 150 lines of Python.
+- [`home-assistant/`](home-assistant/): a read-only package that shows
+  ChargeXcel's readings, headroom and safety state in Home Assistant. It is
+  not a plugin, and it needs no registration on `/dlm`.
 
 ## Try a script in two minutes
 
