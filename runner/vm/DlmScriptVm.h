@@ -44,6 +44,10 @@ struct DlmScriptHost
     int (*http)(
         void* context, const char* method, const char* url, const char* headers,
         const char* body, const char** outBody, size_t* outLen) = nullptr;
+    // Optional owner allow-list (off by default): false refuses the call
+    // before it is made or counted, and dlm.http() answers HTTP_HOST_BLOCKED.
+    // Null means no filter. See DlmScriptVm::urlHostAllowed().
+    bool (*httpAllowed)(void* context, const char* url) = nullptr;
     // A secret by name (API key, tenant), or null if not set.
     const char* (*secret)(void* context, const char* name) = nullptr;
     // dlm.log() and print() land here.
@@ -61,6 +65,23 @@ public:
     static constexpr int HTTP_TLS_BUSY = -2;          // OTA holds the one TLS session
     static constexpr int HTTP_TOO_MANY = -3;          // MAX_HTTP_PER_TICK exceeded
     static constexpr int HTTP_BAD_ARGS = -4;          // not http(s)://, bad method, etc.
+    static constexpr int HTTP_HOST_BLOCKED = -5;      // host not on the owner's allow-list
+
+    // The owner's optional dlm.http() host allow-list: up to 8 entries of
+    // "host" or "host:port", matched case-insensitively and exactly (no
+    // wildcards, no DNS). An entry without a port matches any port.
+    static constexpr size_t HTTP_ALLOW_MAX = 8;
+    static constexpr size_t HTTP_ALLOW_HOST_MAX = 63;
+    using AllowHost = char[HTTP_ALLOW_HOST_MAX + 1];
+    // True when `url`'s host is one of `hosts`. Anything unusual in the
+    // authority -- user@ credentials, a backslash, brackets, a percent-escape,
+    // a second colon -- is refused outright rather than parsed, since that is
+    // exactly where "which host did it really mean" tricks live.
+    static bool urlHostAllowed(const char* url, const AllowHost* hosts, size_t count);
+    // One line of the owner's list -> a stored entry: trimmed, lower-cased,
+    // and a pasted URL reduced to its host[:port]. False for anything that
+    // could never match (empty, too long, bad characters).
+    static bool normalizeAllowHost(const char* line, size_t length, char* out, size_t capacity);
 
     static constexpr size_t HTTP_BODY_MAX = 4096;
     // Room for a real OAuth2 bearer token: a typical access token is an

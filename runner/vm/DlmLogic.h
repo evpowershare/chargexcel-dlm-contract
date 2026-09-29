@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "NetZeroTypes.h"
 #include "SafetyTypes.h"
 
 // The Dynamic Load Management (DLM) plugin contract: what ChargeXcel tells an
@@ -99,6 +100,22 @@ struct DlmTelemetry
     // Neither is immediate; both share this one fixed margin, which is not a
     // per-installation setting.
     float severeOverloadDelaySeconds = 0.0f;
+
+    // Net-zero (solar) charging (added fields; schema unchanged). When the owner has
+    // it on and it is inside their hours, allowedAmps above is already
+    // LOWERED to what the car should draw to use surplus solar -- a plugin
+    // that only reads allowedAmps is solar-aware with no change.
+    // safetyAllowedAmps is the figure before that, the pure load-shedding
+    // headroom, so a plugin can tell "lowered for the sun" (react slowly;
+    // clouds pass) from "lowered for safety" (react now).
+    float safetyAllowedAmps = 0.0f;
+    NetZero::Phase netzeroPhase = NetZero::Phase::Off;
+    NetZero::Mode netzeroMode = NetZero::Mode::MinPlusSolar;
+    NetZero::LegSign netzeroLegA = NetZero::LegSign::Unknown;
+    NetZero::LegSign netzeroLegB = NetZero::LegSign::Unknown;
+    // True when allowedAmps is the net-zero figure rather than the plain
+    // headroom (it may still equal it when safety is the tighter limit).
+    bool netzeroActive = false;
 };
 
 // What a plugin says back. Neither field is an input to anything; both are

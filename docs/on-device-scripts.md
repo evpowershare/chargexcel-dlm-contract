@@ -76,7 +76,7 @@ precision.
 | `ct_valid` | bool | Whether the three current readings are real measurements. `false` means they are placeholders. A failed read's zeros look just like an idle house, so don't read them as amps. |
 | `service_leg_a_amps`, `service_leg_b_amps` | real | The two service legs, in amps. They are deliberately not called L1/L2: an electrician may clamp either sensor onto either leg. |
 | `evse_branch_amps` | real | What the charging-station branch is drawing now. |
-| **`allowed_amps`** | real | **The number to plan against.** How much the charging-station branch may draw right now without pushing either service leg past its continuous limit. Never below 0. |
+| **`allowed_amps`** | real | **The number to plan against.** How much the charging-station branch may draw right now without pushing either service leg past its continuous limit. Never below 0. While solar charging is active it is lowered further, to what the solar surplus can cover. |
 | `allowed_amps_valid` | bool | `false` means "no opinion", **never** "unlimited". Either the unit is not commissioned or its sensors aren't trusted right now. When `false`, `allowed_amps` is 0 and meaningless. |
 | `relay_permitted` | bool | Whether ChargeXcel currently allows the charging circuit to be live. |
 | `relay_closed` | bool | Whether the circuit actually is live. With `relay_permitted`, a script can say "charging stopped, and it wasn't me". |
@@ -86,6 +86,10 @@ precision.
 | `continuous_capacity_amps` | real | The most the charging-station branch may ever be asked for on this installation. Never plan above it. |
 | `topology` | int | `1` = split phase 120/240 V, `2` = split phase 120/208 V. Use it to turn amps into watts: `volts = topology == 2 ? 208 : 240`. (The HTTP route sends this as a string; the script gets the integer.) |
 | `solar_installed` | bool | With solar, the service sensors cannot tell export from import, so net-zero logic has to reason about the legs differently. |
+| `safety_allowed_amps` | real | The load-protection headroom before solar charging lowers it. When `allowed_amps` is below this, the cut is the sun, not load protection. |
+| `netzero` | string | What solar charging is doing: `off`, `outside_window`, `resolving`, `tracking`, `waiting` or `probing`. See [Solar charging](telemetry-and-advisory.md#solar-charging). |
+| `netzero_mode` | string | `min_solar` or `solar_only`. |
+| `netzero_leg_a`, `netzero_leg_b` | string | `export`, `import` or `unknown`: which way each leg is flowing, as far as ChargeXcel can tell. |
 
 Changing this map changes nothing outside the script.
 
@@ -114,6 +118,7 @@ the script never gets a socket.
 | `-2` | TLS busy: the unit's one HTTPS session was held by its own firmware-update check for more than 15 s. Try again next tick. |
 | `-3` | This tick has already made 16 requests. |
 | `-4` | Bad arguments (see above). |
+| `-5` | Blocked: the owner has turned on the script's allowed-hosts list on `/dlm`, and this URL's host isn't on it. Nothing was sent. |
 
 `body` is the response body, **cut at 4,096 bytes**. If a list endpoint can
 return more than that, use its filter or paging options. It is `""` on any

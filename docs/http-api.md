@@ -48,7 +48,9 @@ Always JSON on `200`. `401` if your key is missing, wrong, or revoked;
     "service_rating_amps": 200.0, "evse_breaker_rating_amps": 50.0,
     "continuous_capacity_amps": 40.0, "topology": "split_phase_120_240",
     "solar_installed": false,
-    "disconnect_delay_seconds": 120.0, "severe_overload_delay_seconds": 30.0
+    "disconnect_delay_seconds": 120.0, "severe_overload_delay_seconds": 30.0,
+    "safety_allowed_amps": 24.5, "netzero": "off", "netzero_mode": "min_solar",
+    "netzero_leg_a": "unknown", "netzero_leg_b": "unknown"
   }
 }
 ```
@@ -61,6 +63,14 @@ Always JSON on `200`. `401` if your key is missing, wrong, or revoked;
 poll, read it, decide what the car should draw, tell the car (or the EVSE)
 in whatever protocol it speaks, and report what you did in `action` on the
 next poll. ChargeXcel never needs to know which protocol that was.
+
+With solar charging switched on by the owner, `allowed_amps` is already
+lowered to what the solar surplus can cover, so a plugin that only reads
+`allowed_amps` follows the sun with no changes. `safety_allowed_amps` is the
+figure before that: the plain load-protection headroom. The `netzero*`
+fields say what solar charging is doing; see
+[Solar charging](telemetry-and-advisory.md#solar-charging) for what each
+value means and how to react to it.
 
 ## Being a good citizen
 

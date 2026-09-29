@@ -310,11 +310,128 @@ int DlmScriptVm::nativeTelemetry(bvm* vm)
     mapInsertReal(vm, "continuous_capacity_amps", t.continuousCapacityAmps);
     mapInsertInt(vm, "topology", static_cast<bint>(t.topology));
     mapInsertBool(vm, "solar_installed", t.solarInstalled);
+    mapInsertReal(vm, "safety_allowed_amps", t.safetyAllowedAmps);
+    mapInsertString(vm, "netzero", NetZero::toString(t.netzeroPhase));
+    mapInsertString(vm, "netzero_mode", NetZero::toString(t.netzeroMode));
+    mapInsertString(vm, "netzero_leg_a", NetZero::toString(t.netzeroLegA));
+    mapInsertString(vm, "netzero_leg_b", NetZero::toString(t.netzeroLegB));
     be_pop(vm, 1);
     be_return(vm);
 }
 
 // dlm.http(method, url, headers_map_or_nil, body_or_nil) -> [status, body]
+namespace
+{
+bool authorityChar(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+        c == ':';
+}
+
+char lower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+bool sameIgnoringCase(const char* a, size_t aLen, const char* b, size_t bLen)
+{
+    if (aLen != bLen)
+        return false;
+    for (size_t i = 0; i < aLen; ++i)
+        if (lower(a[i]) != lower(b[i]))
+            return false;
+    return true;
+}
+
+// host[:port] with at most one colon, a non-empty host and, if present, a
+// non-empty all-digit port. Writes where the host part ends.
+bool splitAuthority(const char* text, size_t length, size_t& hostLength)
+{
+    hostLength = length;
+    bool colon = false;
+    for (size_t i = 0; i < length; ++i)
+    {
+        if (!authorityChar(text[i]))
+            return false;
+        if (text[i] == ':')
+        {
+            if (colon)
+                return false;
+            colon = true;
+            hostLength = i;
+        }
+        else if (colon && (text[i] < '0' || text[i] > '9'))
+            return false;
+    }
+    return hostLength > 0 && (!colon || hostLength + 1 < length);
+}
+}  // namespace
+
+bool DlmScriptVm::urlHostAllowed(const char* url, const AllowHost* hosts, size_t count)
+{
+    if (!url || !hosts)
+        return false;
+    const char* authority = nullptr;
+    if (std::strncmp(url, "http://", 7) == 0)
+        authority = url + 7;
+    else if (std::strncmp(url, "https://", 8) == 0)
+        authority = url + 8;
+    else
+        return false;
+    const size_t length = std::strcspn(authority, "/?#");
+    size_t hostLength = 0;
+    if (length == 0 || length > HTTP_ALLOW_HOST_MAX || !splitAuthority(authority, length, hostLength))
+        return false;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t entryLength = std::strlen(hosts[i]);
+        if (entryLength == 0)
+            continue;
+        const bool entryHasPort = std::strchr(hosts[i], ':') != nullptr;
+        if (entryHasPort ? sameIgnoringCase(authority, length, hosts[i], entryLength)
+                         : sameIgnoringCase(authority, hostLength, hosts[i], entryLength))
+            return true;
+    }
+    return false;
+}
+
+bool DlmScriptVm::normalizeAllowHost(const char* line, size_t length, char* out, size_t capacity)
+{
+    if (!line || !out || capacity == 0)
+        return false;
+    out[0] = '\0';
+    while (length > 0 && (*line == ' ' || *line == '\t'))
+        ++line, --length;
+    while (length > 0 && (line[length - 1] == ' ' || line[length - 1] == '\t' || line[length - 1] == '\r'))
+        --length;
+    // A pasted URL: keep only what sits between the scheme and the path.
+    for (size_t i = 0; i + 2 < length; ++i)
+    {
+        if (line[i] == ':' && line[i + 1] == '/' && line[i + 2] == '/')
+        {
+            line += i + 3;
+            length -= i + 3;
+            break;
+        }
+    }
+    for (size_t i = 0; i < length; ++i)
+    {
+        if (line[i] == '/' || line[i] == '?' || line[i] == '#')
+        {
+            length = i;
+            break;
+        }
+    }
+    size_t hostLength = 0;
+    if (length == 0 || length > HTTP_ALLOW_HOST_MAX || length + 1 > capacity ||
+        !splitAuthority(line, length, hostLength))
+        return false;
+    for (size_t i = 0; i < length; ++i)
+        out[i] = lower(line[i]);
+    out[length] = '\0';
+    return true;
+}
+
 int DlmScriptVm::nativeHttp(bvm* vm)
 {
     DlmScriptVm& self = *s_active;
@@ -369,6 +486,8 @@ int DlmScriptVm::nativeHttp(bvm* vm)
 
         if (!methodOk || !urlOk || !headersOk)
             status = HTTP_BAD_ARGS;
+        else if (self.m_host.httpAllowed && !self.m_host.httpAllowed(self.m_host.context, url))
+            status = HTTP_HOST_BLOCKED;
         else if (self.m_httpCalls >= MAX_HTTP_PER_TICK)
             status = HTTP_TOO_MANY;
         else
