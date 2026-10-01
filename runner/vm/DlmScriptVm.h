@@ -25,6 +25,10 @@
 //   - Reach: the script sees dlm, json, string, math. No os, sys, files,
 //     sockets. dlm.http() is the host's own bounded HTTP client, one call at
 //     a time, capped body, and the host serialises it against OTA's TLS.
+//     dlm.ws_send() answers a WebSocket peer that connected to the host
+//     (a charging station speaking OCPP, say); the host owns the socket and
+//     hands each incoming frame to the script's on_ws(), so the script still
+//     never holds a socket itself.
 //   - Decisions: nothing the script says is an input to anything. Its
 //     dlm.report() goes to the /dlm page through DlmLogic::record() like any
 //     other provider's; its real output goes to the cloud API.
@@ -55,6 +59,13 @@ struct DlmScriptHost
     // Called every YIELD_EVERY_HEARTBEATS heartbeats so a long tick still
     // lets the idle task run. vTaskDelay(1) on the target; no-op on the host.
     void (*yield)(void* context) = nullptr;
+    // One text frame to a connected WebSocket peer (<= WS_FRAME_MAX bytes).
+    // False if that peer is not connected or the send failed. Null = the
+    // host has no WebSocket door, and dlm.ws_send() always answers false.
+    bool (*wsSend)(void* context, const char* peer, const char* text, size_t length) = nullptr;
+    // The ids of the connected peers, host-owned strings valid until the
+    // next call; returns how many were written to `out` (<= capacity).
+    size_t (*wsPeers)(void* context, const char** out, size_t capacity) = nullptr;
 };
 
 class DlmScriptVm
@@ -105,6 +116,13 @@ public:
     static constexpr uint32_t INTERVAL_DEFAULT_S = 60;
     static constexpr size_t SOURCE_MAX = 8192;
     static constexpr size_t ERROR_MAX = 96;
+    // WebSocket: the largest text frame either way, the longest peer id (the
+    // last path segment the peer connected to), and the most dlm.ws_send()
+    // calls one tick or one on_ws() may make.
+    static constexpr size_t WS_FRAME_MAX = 2048;
+    static constexpr size_t WS_PEER_MAX = 31;
+    static constexpr uint32_t WS_SENDS_PER_CALL = 8;
+    static constexpr size_t WS_PEERS_MAX = 2;
 
     struct TickResult
     {
@@ -114,6 +132,18 @@ public:
         char error[ERROR_MAX] = {};
         uint32_t httpCalls = 0;
         uint32_t heartbeats = 0;
+        // dlm.report() was called during this call. A tick that never reports
+        // reads as present=false; an on_ws() that never reports leaves the
+        // last report standing.
+        bool reported = false;
+    };
+
+    // What happened on a WebSocket, for onWebSocket().
+    enum class WsEvent : uint8_t
+    {
+        Open,  // a peer connected (text is empty)
+        Text,  // a text frame arrived
+        Close, // the peer went away (text is empty)
     };
 
     DlmScriptVm() = default;
@@ -129,6 +159,11 @@ public:
     // Calls the script's tick(). Never throws, never leaves anything on the
     // VM stack; on any error the caller should unload() and reload later.
     TickResult tick();
+    // Calls the script's on_ws(peer, kind, text) -- kind "open", "text" or
+    // "close", text nil unless kind is "text" -- under the same budget as a
+    // tick. A script that defines no on_ws() just ignores the event (ok).
+    // Same error contract as tick().
+    TickResult onWebSocket(const char* peer, WsEvent event, const char* text, size_t length);
     void unload();
 
     [[nodiscard]] bool loaded() const { return m_vm != nullptr; }
@@ -145,12 +180,14 @@ private:
     // Per-call bookkeeping the native functions and the heartbeat read.
     uint32_t m_heartbeats = 0;
     uint32_t m_httpCalls = 0;
+    uint32_t m_wsSends = 0;
     DlmAdvisory m_reported = {};
     bool m_reportedThisTick = false;
 
     void registerModule();
     bool runProtected(int argc, char* error, size_t errorCapacity);
     void readInterval();
+    TickResult finishCall(bool ok, TickResult& result);
 
     static void obsHook(struct bvm* vm, int event, ...);
     static int nativeTelemetry(struct bvm* vm);
@@ -158,5 +195,7 @@ private:
     static int nativeReport(struct bvm* vm);
     static int nativeLog(struct bvm* vm);
     static int nativeSecret(struct bvm* vm);
+    static int nativeWsSend(struct bvm* vm);
+    static int nativeWsPeers(struct bvm* vm);
     static DlmScriptVm* s_active;
 };

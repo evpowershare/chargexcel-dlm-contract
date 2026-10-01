@@ -1,0 +1,22 @@
+# Headroom timeline for scripts/ocpp.be (cxl-run --timeline). One line per
+# change: TICK field=value ... Setting allowed_amps also sets
+# safety_allowed_amps unless the line names it (then the sun is the cut).
+# Expected profile limits are in the comments; the station is "CP1".
+1  allowed_amps=24 continuous_capacity_amps=32 evse_branch_amps=0
+#   -> 23 A at once (first profile, 1 A under the line)
+5  allowed_amps=30
+7  allowed_amps=27
+#   -> raise held 2 min (4 ticks), then to the smallest seen: 26 A
+12 allowed_amps=18
+#   -> cut at once: 17 A
+15 allowed_amps=4
+#   -> under 6 A: 0 A (pause)
+18 allowed_amps=12
+#   -> resume after 2 min of >= 8 A: 11 A
+26 relay_closed=0
+#   -> relay open: send nothing
+28 relay_closed=1 allowed_amps=40
+#   -> breaker-capped: raise held, then 32 A (no 1 A margin at the cap)
+36 allowed_amps=10 safety_allowed_amps=30
+#   -> net-zero cut: lower after 1 min, to the nearest amp: 10 A
+42 allowed_amps=20 safety_allowed_amps=20 evse_branch_amps=21

@@ -29,6 +29,7 @@ make            # builds ./cxl-run
 cxl-run script.be [--ticks N] [--set field=value ...] [--telemetry FILE]
                   [--secret name=value ...] [--secrets FILE]
                   [--responses FILE | --live] [-v]
+                  [--ws-listen PORT [--tick-every SECONDS]] [--timeline FILE]
 ```
 
 - `--set allowed_amps=3`: override one telemetry field. The names are the
@@ -44,6 +45,18 @@ cxl-run script.be [--ticks N] [--set field=value ...] [--telemetry FILE]
 - `--live`: make the requests for real, through libcurl, at most one a
   second, with a 10 s timeout and no redirects, like the unit.
 - `-v`: also print each request body and response body.
+- `--ws-listen PORT`: open the unit's WebSocket door on this computer, at
+  `ws://<host>:PORT/ocpp/<id>`, with the same rules: Basic auth against the
+  `ws_password` secret, one peer, 2,048-byte messages. A real charging station
+  or an OCPP simulator can then talk to the script. Ticks run in real time
+  until `--ticks` or Ctrl-C, and every frame in or out is printed.
+- `--tick-every SECONDS`: with `--ws-listen`, how long a tick really takes
+  (default: the script's `interval`). Telemetry time still moves on by
+  `interval` each tick, so hold times measured in ticks behave the same,
+  only faster.
+- `--timeline FILE`: change telemetry at given ticks, one `TICK field=value
+  ...` line each. Setting `allowed_amps` also sets `safety_allowed_amps`
+  unless the line sets that too. See `scripts/replay/ocpp-timeline.txt`.
 
 ### Responses file
 

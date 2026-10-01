@@ -44,7 +44,7 @@ from its own sensors whether zero plugins are running or ten. See
 |---|---|---|
 | Runs on | ChargeXcel itself | any computer on the network (a Raspberry Pi, a server, a laptop) |
 | Language | [Berry](https://berry-lang.github.io/) (a small Python-like language) | anything that can make HTTP requests |
-| Talks to the equipment through | HTTPS calls to a cloud API (`dlm.http()`) | whatever you like: OCPP, a local API, a cloud API |
+| Talks to the equipment through | HTTPS calls to a cloud API (`dlm.http()`), or an OCPP charging station that connects to the unit itself (`on_ws()` / `dlm.ws_send()`) | whatever you like: OCPP, a local API, a cloud API |
 | Good for | vendors with a cloud API; no extra hardware | local protocols, heavy logic, anything the script limits rule out |
 | Start with | [`docs/on-device-scripts.md`](docs/on-device-scripts.md), [`scripts/`](scripts/) | [`docs/http-api.md`](docs/http-api.md), [`reference-plugin/`](reference-plugin/) |
 
@@ -65,7 +65,11 @@ plugin.
 - [`docs/safety-properties.md`](docs/safety-properties.md): what the
   contract guarantees, each stated as the failure it prevents.
 - [`scripts/`](scripts/): example on-device scripts. `epiccharging.be` and
-  `smartcar.be` have run against those vendors' real APIs.
+  `smartcar.be` have run against those vendors' real APIs. `ocpp.be` is an
+  OCPP 1.6J central system: a charging station connects straight to the
+  unit, and the script keeps a charging profile on it that follows the
+  headroom. It has been run against the
+  [MicroOcppSimulator](https://github.com/matth-x/MicroOcppSimulator).
 - [`runner/`](runner/): `cxl-run`, which tests a script on your own computer
   with the same Berry VM and limits the unit uses.
 - [`reference-plugin/`](reference-plugin/): a complete off-board plugin in
@@ -86,6 +90,33 @@ make -C runner
 
 The first command starts the car and then stays quiet. The second one sees
 only 3 A of headroom and stops it.
+
+### Try the OCPP script with a simulated charging station
+
+> The WebSocket door `ocpp.be` needs on a unit arrives in the firmware
+> release after 0.9.34. The runner below already has it.
+
+`cxl-run --ws-listen` opens the same WebSocket door the unit has, so an OCPP
+1.6J station or simulator can connect to the script on your computer:
+
+```sh
+./runner/cxl-run scripts/ocpp.be --ws-listen 9000 --tick-every 2 \
+    --secret ws_password=demo-pass --timeline scripts/replay/ocpp-timeline.txt
+```
+
+Point the station at `ws://<your-computer>:9000/ocpp/` with charge point id
+`CP1` and authorization key (Basic auth password) `demo-pass`. For
+MicroOcppSimulator, which serves its own web UI on port 8000:
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/websocket \
+    -d '{"backendUrl":"ws://127.0.0.1:9000/ocpp","chargeBoxId":"CP1","authorizationKey":"demo-pass"}'
+```
+
+The timeline drops, pauses, resumes and caps the headroom, and the comments
+in it say which charging-profile limit each step should produce. On a unit,
+paste `ocpp.be` on the `/dlm` page, set the secret `ws_password`, and point
+the station at `ws://<unit>/ocpp/`.
 
 ## Versioning
 

@@ -72,6 +72,7 @@ precision.
 | Key | Type | Meaning |
 |---|---|---|
 | `epoch` | int | Wall-clock seconds since 1970, or `0` until the unit has synced its clock. |
+| `time_utc` | string | The same instant as ISO 8601 UTC, e.g. `2026-10-01T00:20:23Z`, ready for protocols that want a timestamp. |
 | `time_trusted` | bool | Whether `epoch` is real. Check it before any time-of-day logic. |
 | `ct_valid` | bool | Whether the three current readings are real measurements. `false` means they are placeholders. A failed read's zeros look just like an idle house, so don't read them as amps. |
 | `service_leg_a_amps`, `service_leg_b_amps` | real | The two service legs, in amps. They are deliberately not called L1/L2: an electrician may clamp either sensor onto either leg. |
@@ -129,6 +130,54 @@ a tick can make at most 16, and the unit has only one HTTPS session at a
 time. Time spent waiting inside `dlm.http()` does not count against the
 tick's instruction budget.
 
+### The WebSocket door: `on_ws()`, `dlm.ws_send()`, `dlm.ws_peers()`
+
+*New in the firmware release after 0.9.34, as is `time_utc`. The runner in
+this repo already has both.*
+
+Some equipment connects *to* its controller instead of being called: an
+OCPP charging station opens a WebSocket to its central system and waits to
+be told what to do. For that, the unit has one WebSocket door:
+
+```
+ws://<unit>/ocpp/<id>
+```
+
+- `<id>` is the last path segment (letters, digits, `-`, `_`, `.`; up to 31
+  characters). OCPP stations append their charge point id themselves, so
+  configure them with `ws://<unit>/ocpp/`.
+- **HTTP Basic auth is required.** The password must equal the secret
+  `ws_password`; the user name is ignored (OCPP security profile 1). While
+  that secret is unset, every connection is refused with `401`.
+- **One peer at a time.** A second connection gets `503`. So does any
+  connection while no script is installed.
+- If the peer offers the `ocpp1.6` subprotocol, it is accepted.
+- The connection is plain `ws://`, not `wss://`: the unit can afford only
+  one TLS session, and its firmware updates need it. Keep the station on
+  the same local network.
+
+The firmware only carries text frames; what they mean is up to the script.
+
+**`on_ws(peer, kind, text)`**: define this and the unit calls it as soon as
+something happens on the door, without waiting for the next tick. `kind` is
+`"open"`, `"text"` or `"close"`, and `text` is the message for `"text"`,
+`nil` otherwise. It runs under the same instruction budget as a tick. If it
+calls `dlm.report()`, that report replaces the last one; if not, the last
+one stands. An error in `on_ws()` is treated like an error in a tick. A
+freshly loaded script gets an `"open"` for a peer that was already
+connected.
+
+**`dlm.ws_send(peer, text)` → bool**: sends one text frame to the connected
+peer, and returns `true` once it is on the wire. It returns `false` if that
+peer isn't connected, the text is empty or over 2,048 bytes, or this tick or
+`on_ws()` call has already sent 8 frames.
+
+**`dlm.ws_peers()` → list**: the ids of the connected peers (zero or one).
+
+Messages from the peer are limited to 2,048 bytes as well. A larger
+message, a binary frame or a fragmented message closes the connection, and
+the peer reconnects.
+
 ### `dlm.log(text)`
 
 Writes up to 120 characters to the unit's log and to the *Last log* line on
@@ -158,7 +207,8 @@ change its state. See [`safety-properties.md`](safety-properties.md).
 - **Modules.** Only `json`, `string` and `math`. `os`, `sys`, `debug`,
   `introspect`, `gc`, `time`, `file` and the rest are compiled out, so
   `import os` is an error. There is no file system, no socket and no
-  clock; use `epoch` for the time.
+  clock; use `epoch` or `time_utc` for the time. The WebSocket door above
+  is owned by the unit; the script only sees its messages.
 - **Instruction budget.** A tick gets about 2.1 million Berry instructions.
   Past that it is stopped with `timeout_error`. Waiting on `dlm.http()`
   doesn't count.
@@ -205,5 +255,6 @@ script without opening the log.
 | [`minimal.be`](../scripts/minimal.be) | a made-up API | kW limit every tick; the smallest complete script | `api_key` |
 | [`epiccharging.be`](../scripts/epiccharging.be) | epiccharging.com | split the headroom in kW across charging ports | `tenant`, `api_key` |
 | [`smartcar.be`](../scripts/smartcar.be) | smartcar.com | start/stop on 6 A, send only on change | `client_id`, `client_secret`, `vehicle_id`, `user_id` |
+| [`ocpp.be`](../scripts/ocpp.be) | any OCPP 1.6J charging station | the station connects to the unit; a charging profile in amps (or watts, if the station only takes watts) that lowers at once, raises after 2 min, pauses under 6 A | `ws_password` |
 
 Tesla isn't a script. It is a built-in connector in the firmware.

@@ -9,6 +9,13 @@
 //   cxl-run script.be [--ticks N] [--set field=value ...] [--telemetry FILE]
 //                     [--secret name=value ...] [--secrets FILE]
 //                     [--responses FILE | --live] [-v]
+//                     [--ws-listen PORT [--tick-every SECONDS]] [--timeline FILE]
+//
+// --ws-listen opens the same WebSocket door the unit has (ws://host:PORT/ocpp/<id>,
+// Basic auth against the secret ws_password), so a real charging station or an
+// OCPP simulator can connect to the script. Ticks then run in real time, every
+// --tick-every seconds (default: the script's interval), until --ticks or Ctrl-C.
+// --timeline changes telemetry at given ticks: lines of "TICK field=value ...".
 //
 // Exit status: 0 all good, 1 the script failed to load or a tick errored,
 // 2 it ran but its memory peak is over what the unit guarantees (see below).
@@ -17,7 +24,14 @@
 
 #include <curl/curl.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <csignal>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -129,9 +143,20 @@ struct Canned
     bool used = false;
 };
 
+struct WsPeer
+{
+    int fd = -1;
+    std::string id;
+    std::string in;      // bytes received, not yet a whole frame
+    std::string partial; // a fragmented message being reassembled
+};
+
 struct Runner
 {
     DlmTelemetry telemetry = {};
+    std::map<int, std::vector<std::pair<std::string, std::string>>> timeline;
+    std::vector<WsPeer> peers;
+    std::vector<std::string> peerIds; // backing store for hostWsPeers()
     std::map<std::string, std::string> secrets;
     std::vector<Canned> canned;
     bool live = false;
@@ -190,6 +215,7 @@ bool setTelemetry(const std::string& field, const std::string& value)
     else if (field == "continuous_capacity_amps") t.continuousCapacityAmps = f;
     else if (field == "topology") t.topology = static_cast<uint8_t>(std::atoi(value.c_str()));
     else if (field == "solar_installed") t.solarInstalled = parseBool(value);
+    else if (field == "safety_allowed_amps") t.safetyAllowedAmps = f;
     else return false;
     return true;
 }
@@ -214,6 +240,69 @@ void defaultTelemetry()
     t.continuousCapacityAmps = 32.0f;
     t.topology = 1;
     t.solarInstalled = false;
+    t.safetyAllowedAmps = 24.0f;
+}
+
+bool splitPair(const std::string& arg, std::string& k, std::string& v);
+
+// Timeline file: "TICK field=value field=value ...", # comments. Setting
+// allowed_amps also sets safety_allowed_amps unless the line names it too
+// (no solar cut unless you ask for one).
+bool readTimeline(const char* path)
+{
+    std::ifstream in(path);
+    if (!in)
+    {
+        std::fprintf(stderr, "cannot read %s\n", path);
+        return false;
+    }
+    std::string line;
+    int n = 0;
+    while (std::getline(in, line))
+    {
+        ++n;
+        line = trim(line);
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream ss(line);
+        int tick = 0;
+        ss >> tick;
+        std::string pair, k, v;
+        if (tick < 1)
+        {
+            std::fprintf(stderr, "%s:%d: a line starts with a tick number >= 1\n", path, n);
+            return false;
+        }
+        while (ss >> pair)
+        {
+            if (!splitPair(pair, k, v))
+            {
+                std::fprintf(stderr, "%s:%d: cannot use '%s'\n", path, n, pair.c_str());
+                return false;
+            }
+            g.timeline[tick].push_back({k, v});
+        }
+    }
+    return true;
+}
+
+void applyTimeline(int tick)
+{
+    const auto it = g.timeline.find(tick);
+    if (it == g.timeline.end())
+        return;
+    bool safetyNamed = false;
+    for (const auto& kv : it->second)
+        safetyNamed = safetyNamed || kv.first == "safety_allowed_amps";
+    for (const auto& kv : it->second)
+    {
+        if (!setTelemetry(kv.first, kv.second))
+            std::printf("  timeline: unknown field %s\n", kv.first.c_str());
+        else
+            std::printf("  timeline: %s=%s\n", kv.first.c_str(), kv.second.c_str());
+        if (kv.first == "allowed_amps" && !safetyNamed)
+            g.telemetry.safetyAllowedAmps = g.telemetry.allowedAmps;
+    }
 }
 
 bool splitPair(const std::string& arg, std::string& k, std::string& v)
@@ -431,26 +520,307 @@ void hostLog(void*, const char* text)
 
 void hostYield(void*) {}
 
+// ---------------------------------------------------------------------------
+// The WebSocket door (--ws-listen): RFC 6455 text frames, one listening
+// socket, at most DlmScriptVm::WS_PEERS_MAX peers -- what the unit offers.
+// ---------------------------------------------------------------------------
+std::string sha1(const std::string& msg)
+{
+    uint32_t h[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
+    std::string m = msg;
+    const uint64_t bits = static_cast<uint64_t>(msg.size()) * 8;
+    m += static_cast<char>(0x80);
+    while (m.size() % 64 != 56)
+        m += '\0';
+    for (int i = 7; i >= 0; --i)
+        m += static_cast<char>((bits >> (i * 8)) & 0xff);
+    auto rol = [](uint32_t x, int n) { return (x << n) | (x >> (32 - n)); };
+    for (size_t off = 0; off < m.size(); off += 64)
+    {
+        uint32_t w[80];
+        for (int i = 0; i < 16; ++i)
+            w[i] = (uint32_t(uint8_t(m[off + i * 4])) << 24) | (uint32_t(uint8_t(m[off + i * 4 + 1])) << 16) |
+                (uint32_t(uint8_t(m[off + i * 4 + 2])) << 8) | uint32_t(uint8_t(m[off + i * 4 + 3]));
+        for (int i = 16; i < 80; ++i)
+            w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+        for (int i = 0; i < 80; ++i)
+        {
+            uint32_t f, k;
+            if (i < 20) f = (b & c) | (~b & d), k = 0x5A827999;
+            else if (i < 40) f = b ^ c ^ d, k = 0x6ED9EBA1;
+            else if (i < 60) f = (b & c) | (b & d) | (c & d), k = 0x8F1BBCDC;
+            else f = b ^ c ^ d, k = 0xCA62C1D6;
+            const uint32_t t = rol(a, 5) + f + e + k + w[i];
+            e = d, d = c, c = rol(b, 30), b = a, a = t;
+        }
+        h[0] += a, h[1] += b, h[2] += c, h[3] += d, h[4] += e;
+    }
+    std::string out;
+    for (uint32_t x : h)
+        for (int i = 3; i >= 0; --i)
+            out += static_cast<char>((x >> (i * 8)) & 0xff);
+    return out;
+}
+
+const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64(const std::string& in)
+{
+    std::string out;
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3)
+    {
+        const uint32_t v = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8) | uint8_t(in[i + 2]);
+        out += B64[v >> 18], out += B64[(v >> 12) & 63], out += B64[(v >> 6) & 63], out += B64[v & 63];
+    }
+    if (i + 1 == in.size())
+    {
+        const uint32_t v = uint8_t(in[i]) << 16;
+        out += B64[v >> 18], out += B64[(v >> 12) & 63], out += "==";
+    }
+    else if (i + 2 == in.size())
+    {
+        const uint32_t v = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8);
+        out += B64[v >> 18], out += B64[(v >> 12) & 63], out += B64[(v >> 6) & 63], out += '=';
+    }
+    return out;
+}
+
+std::string unbase64(const std::string& in)
+{
+    std::string out;
+    uint32_t v = 0;
+    int n = 0;
+    for (char c : in)
+    {
+        const char* p = std::strchr(B64, c);
+        if (!p || !c)
+            break;
+        v = (v << 6) | static_cast<uint32_t>(p - B64);
+        if (++n == 4)
+        {
+            out += static_cast<char>(v >> 16), out += static_cast<char>((v >> 8) & 0xff), out += static_cast<char>(v & 0xff);
+            n = 0, v = 0;
+        }
+    }
+    if (n == 2)
+        out += static_cast<char>(v >> 4);
+    else if (n == 3)
+        out += static_cast<char>(v >> 10), out += static_cast<char>((v >> 2) & 0xff);
+    return out;
+}
+
+bool sendAll(int fd, const std::string& data)
+{
+    size_t done = 0;
+    while (done < data.size())
+    {
+        const ssize_t n = ::send(fd, data.data() + done, data.size() - done, 0);
+        if (n <= 0)
+            return false;
+        done += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool sendFrame(int fd, uint8_t opcode, const std::string& payload)
+{
+    std::string f;
+    f += static_cast<char>(0x80 | opcode);
+    if (payload.size() < 126)
+        f += static_cast<char>(payload.size());
+    else
+    {
+        f += static_cast<char>(126);
+        f += static_cast<char>(payload.size() >> 8), f += static_cast<char>(payload.size() & 0xff);
+    }
+    return sendAll(fd, f + payload);
+}
+
+std::string header(const std::string& request, const char* name)
+{
+    std::istringstream lines(request);
+    const size_t len = std::strlen(name);
+    for (std::string line; std::getline(lines, line);)
+    {
+        if (line.size() > len && strncasecmp(line.c_str(), name, len) == 0 && line[len] == ':')
+            return trim(line.substr(len + 1));
+    }
+    return "";
+}
+
+// The handshake. Same rules as the unit: path /ocpp/<id>, Basic auth whose
+// password is the secret ws_password (refused while it is unset), at most
+// WS_PEERS_MAX peers, subprotocol ocpp1.6 echoed when offered.
+bool acceptPeer(int fd, std::string& id)
+{
+    std::string request;
+    char buf[1024];
+    while (request.find("\r\n\r\n") == std::string::npos && request.size() < 8192)
+    {
+        pollfd p = {fd, POLLIN, 0};
+        if (poll(&p, 1, 3000) <= 0)
+            return false;
+        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0)
+            return false;
+        request.append(buf, static_cast<size_t>(n));
+    }
+    std::string path;
+    {
+        std::istringstream first(request);
+        std::string method;
+        first >> method >> path;
+    }
+    const std::string key = header(request, "Sec-WebSocket-Key");
+    const char* prefix = "/ocpp/";
+    id = path.rfind(prefix, 0) == 0 ? path.substr(std::strlen(prefix)) : "";
+    const std::string auth = header(request, "Authorization");
+    const auto pw = g.secrets.find("ws_password");
+    std::string given;
+    if (auth.rfind("Basic ", 0) == 0)
+    {
+        given = unbase64(trim(auth.substr(6)));
+        const size_t colon = given.find(':');
+        given = colon == std::string::npos ? "" : given.substr(colon + 1);
+    }
+    const char* refuse = nullptr;
+    if (key.empty() || id.empty() || id.size() > DlmScriptVm::WS_PEER_MAX || id.find('/') != std::string::npos)
+        refuse = "404 Not Found";
+    else if (pw == g.secrets.end() || pw->second.empty() || given != pw->second)
+        refuse = "401 Unauthorized";
+    else if (g.peers.size() >= DlmScriptVm::WS_PEERS_MAX)
+        refuse = "503 Service Unavailable";
+    if (refuse)
+    {
+        std::printf("ws refused %s (%s)\n", path.c_str(), refuse);
+        sendAll(fd, std::string("HTTP/1.1 ") + refuse +
+                "\r\nWWW-Authenticate: Basic realm=\"ChargeXcel\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return false;
+    }
+    std::string reply = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: " +
+        base64(sha1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) + "\r\n";
+    if (header(request, "Sec-WebSocket-Protocol").find("ocpp1.6") != std::string::npos)
+        reply += "Sec-WebSocket-Protocol: ocpp1.6\r\n";
+    return sendAll(fd, reply + "\r\n");
+}
+
+bool hostWsSend(void*, const char* peer, const char* text, size_t length)
+{
+    for (const WsPeer& p : g.peers)
+    {
+        if (p.id == peer)
+        {
+            std::printf("  ws %s <- %.*s\n", peer, static_cast<int>(length), text);
+            return sendFrame(p.fd, 1, std::string(text, length));
+        }
+    }
+    std::printf("  ws %s: not connected, frame dropped\n", peer);
+    return false;
+}
+
+size_t hostWsPeers(void*, const char** out, size_t capacity)
+{
+    g.peerIds.clear();
+    for (const WsPeer& p : g.peers)
+        g.peerIds.push_back(p.id);
+    size_t n = 0;
+    for (; n < g.peerIds.size() && n < capacity; ++n)
+        out[n] = g.peerIds[n].c_str();
+    return n;
+}
+
+// Pulls whole frames out of p.in. Returns false when the peer must go.
+// Text messages land in `texts`.
+bool takeFrames(WsPeer& p, std::vector<std::string>& texts)
+{
+    for (;;)
+    {
+        if (p.in.size() < 2)
+            return true;
+        const uint8_t b0 = uint8_t(p.in[0]), b1 = uint8_t(p.in[1]);
+        size_t len = b1 & 0x7f, at = 2;
+        if (len == 126)
+        {
+            if (p.in.size() < 4)
+                return true;
+            len = (uint8_t(p.in[2]) << 8) | uint8_t(p.in[3]);
+            at = 4;
+        }
+        else if (len == 127)
+            return false; // nothing here is that big
+        const bool masked = b1 & 0x80;
+        if (!masked || p.in.size() < at + 4 + len)
+            return masked;
+        const std::string mask = p.in.substr(at, 4);
+        std::string payload = p.in.substr(at + 4, len);
+        for (size_t i = 0; i < payload.size(); ++i)
+            payload[i] = static_cast<char>(payload[i] ^ mask[i % 4]);
+        p.in.erase(0, at + 4 + len);
+        const uint8_t opcode = b0 & 0x0f;
+        if (opcode == 8)
+        {
+            sendFrame(p.fd, 8, "");
+            return false;
+        }
+        if (opcode == 9)
+        {
+            sendFrame(p.fd, 10, payload);
+            continue;
+        }
+        if (opcode != 0 && opcode != 1)
+            continue; // pong, binary: ignored
+        p.partial += payload;
+        if (p.partial.size() > DlmScriptVm::WS_FRAME_MAX)
+        {
+            std::printf("ws %s: message over %zu bytes, dropped\n", p.id.c_str(), DlmScriptVm::WS_FRAME_MAX);
+            p.partial.clear();
+            continue;
+        }
+        if (b0 & 0x80)
+        {
+            texts.push_back(p.partial);
+            p.partial.clear();
+        }
+    }
+}
+
+volatile std::sig_atomic_t g_stop = 0;
+void onSignal(int)
+{
+    g_stop = 1;
+}
+
 void usage()
 {
     std::fprintf(stderr,
         "usage: cxl-run script.be [--ticks N] [--set field=value ...] [--telemetry FILE]\n"
         "                         [--secret name=value ...] [--secrets FILE]\n"
-        "                         [--responses FILE | --live] [-v]\n");
+        "                         [--responses FILE | --live] [-v]\n"
+        "                         [--ws-listen PORT [--tick-every SECONDS]] [--timeline FILE]\n");
 }
 }
 
 int main(int argc, char** argv)
 {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0); // a log file follows along live
     defaultTelemetry();
     const char* scriptPath = nullptr;
     int ticks = 1;
+    bool ticksGiven = false;
+    int wsPort = 0;
+    double tickEvery = 0;
     std::string k, v;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
         const bool hasNext = i + 1 < argc;
-        if (a == "--ticks" && hasNext) ticks = std::atoi(argv[++i]);
+        if (a == "--ticks" && hasNext) ticks = std::atoi(argv[++i]), ticksGiven = true;
+        else if (a == "--ws-listen" && hasNext) wsPort = std::atoi(argv[++i]);
+        else if (a == "--tick-every" && hasNext) tickEvery = std::atof(argv[++i]);
+        else if (a == "--timeline" && hasNext) { if (!readTimeline(argv[++i])) return 1; }
         else if (a == "--set" && hasNext)
         {
             if (!splitPair(argv[++i], k, v) || !setTelemetry(k, v))
@@ -503,6 +873,33 @@ int main(int argc, char** argv)
     host.secret = hostSecret;
     host.log = hostLog;
     host.yield = hostYield;
+    host.wsSend = hostWsSend;
+    host.wsPeers = hostWsPeers;
+
+    int listenFd = -1;
+    if (wsPort > 0)
+    {
+        listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
+        const int one = 1;
+        setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(wsPort));
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (listenFd < 0 || ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            ::listen(listenFd, 4) != 0)
+        {
+            std::fprintf(stderr, "cannot listen on port %d\n", wsPort);
+            return 1;
+        }
+        std::signal(SIGINT, onSignal);
+        std::signal(SIGTERM, onSignal);
+        std::signal(SIGPIPE, SIG_IGN);
+        if (!ticksGiven)
+            ticks = 1 << 30;
+        std::printf("ws: listening on ws://0.0.0.0:%d/ocpp/<id>%s\n", wsPort,
+            g.secrets.count("ws_password") ? "" : "  (no ws_password secret: every peer is refused)");
+    }
 
     int exitCode = 0;
     size_t worstPeak = 0;
@@ -523,8 +920,94 @@ int main(int argc, char** argv)
             }
             std::printf("loaded: interval %u s, %zu bytes resident\n", vm.intervalSeconds(), g_used);
             worstPeak = std::max(worstPeak, g_peak);
+            // Like the unit: a freshly loaded script hears about peers already connected.
+            for (const WsPeer& p : g.peers)
+                (void)vm.onWebSocket(p.id.c_str(), DlmScriptVm::WsEvent::Open, "", 0);
         }
 
+        if (listenFd >= 0)
+        {
+            // Real time: serve the door until the next tick is due.
+            const double every = tickEvery > 0 ? tickEvery : vm.intervalSeconds();
+            const auto due = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(every * 1000));
+            while (!g_stop && vm.loaded())
+            {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(due - std::chrono::steady_clock::now()).count();
+                if (left <= 0 && i > 1)
+                    break;
+                std::vector<pollfd> fds = {{listenFd, POLLIN, 0}};
+                for (const WsPeer& p : g.peers)
+                    fds.push_back({p.fd, POLLIN, 0});
+                if (poll(fds.data(), fds.size(), i == 1 ? 0 : static_cast<int>(std::max<long long>(left, 0))) < 0)
+                    continue;
+                std::vector<std::pair<std::string, std::pair<DlmScriptVm::WsEvent, std::string>>> events;
+                if (fds[0].revents & POLLIN)
+                {
+                    const int fd = ::accept(listenFd, nullptr, nullptr);
+                    std::string id;
+                    if (fd >= 0 && acceptPeer(fd, id))
+                    {
+                        g.peers.push_back({fd, id, "", ""});
+                        std::printf("ws %s connected\n", id.c_str());
+                        events.push_back({id, {DlmScriptVm::WsEvent::Open, ""}});
+                    }
+                    else if (fd >= 0)
+                        ::close(fd);
+                }
+                for (size_t f = 1; f < fds.size(); ++f)
+                {
+                    if (!(fds[f].revents & (POLLIN | POLLHUP | POLLERR)))
+                        continue;
+                    auto it = std::find_if(g.peers.begin(), g.peers.end(), [&](const WsPeer& p) { return p.fd == fds[f].fd; });
+                    if (it == g.peers.end())
+                        continue;
+                    char buf[2048];
+                    const ssize_t n = ::recv(it->fd, buf, sizeof(buf), 0);
+                    std::vector<std::string> texts;
+                    bool keep = n > 0;
+                    if (keep)
+                    {
+                        it->in.append(buf, static_cast<size_t>(n));
+                        keep = takeFrames(*it, texts);
+                    }
+                    for (const std::string& t : texts)
+                    {
+                        std::printf("  ws %s -> %s\n", it->id.c_str(), t.c_str());
+                        events.push_back({it->id, {DlmScriptVm::WsEvent::Text, t}});
+                    }
+                    if (!keep)
+                    {
+                        std::printf("ws %s disconnected\n", it->id.c_str());
+                        events.push_back({it->id, {DlmScriptVm::WsEvent::Close, ""}});
+                        ::close(it->fd);
+                        g.peers.erase(it);
+                    }
+                }
+                for (const auto& e : events)
+                {
+                    g_peak = g_used;
+                    const DlmScriptVm::TickResult r = vm.onWebSocket(e.first.c_str(), e.second.first,
+                        e.second.second.c_str(), e.second.second.size());
+                    worstPeak = std::max(worstPeak, g_peak);
+                    if (!r.ok)
+                    {
+                        std::printf("  ERROR in on_ws: %s\n", r.error);
+                        vm.unload();
+                        exitCode = 1;
+                        break;
+                    }
+                    if (r.reported)
+                        std::printf("  report: %s \"%s\"\n", r.advisory.present ? "active" : "idle", r.advisory.action);
+                }
+                if (i == 1)
+                    break;
+            }
+            if (g_stop)
+                break;
+            if (!vm.loaded())
+                continue;
+        }
+        applyTimeline(i);
         g_peak = g_used;
         std::printf("tick %d (epoch %u)\n", i, g.telemetry.epochSeconds);
         const DlmScriptVm::TickResult r = vm.tick();
@@ -542,6 +1025,10 @@ int main(int argc, char** argv)
         g.telemetry.epochSeconds += vm.loaded() ? vm.intervalSeconds() : DlmScriptVm::INTERVAL_DEFAULT_S;
     }
     vm.unload();
+    for (const WsPeer& p : g.peers)
+        ::close(p.fd);
+    if (listenFd >= 0)
+        ::close(listenFd);
     curl_global_cleanup();
 
     std::printf("memory peak: %zu bytes here; the unit's arena is %zu bytes\n", worstPeak, unit::ARENA_BYTES);

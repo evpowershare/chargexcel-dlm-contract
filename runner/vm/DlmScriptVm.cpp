@@ -3,6 +3,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #include "berry.h"
 
@@ -177,6 +178,7 @@ DlmScriptVm::TickResult DlmScriptVm::tick()
         return result;
     }
     m_httpCalls = 0;
+    m_wsSends = 0;
     m_reported = DlmAdvisory{};
     m_reportedThisTick = false;
 
@@ -186,16 +188,51 @@ DlmScriptVm::TickResult DlmScriptVm::tick()
         std::snprintf(result.error, sizeof(result.error), "script defines no tick() function");
         return result;
     }
-    result.ok = runProtected(0, result.error, sizeof(result.error));
-    // Everything a tick built is garbage now; collect it so the arena's
-    // resident figure (and the next tick's headroom) is real, not deferred.
+    return finishCall(runProtected(0, result.error, sizeof(result.error)), result);
+}
+
+DlmScriptVm::TickResult DlmScriptVm::onWebSocket(const char* peer, WsEvent event, const char* text, size_t length)
+{
+    TickResult result;
+    if (!m_vm)
+    {
+        std::snprintf(result.error, sizeof(result.error), "no script loaded");
+        return result;
+    }
+    m_httpCalls = 0;
+    m_wsSends = 0;
+    m_reported = DlmAdvisory{};
+    m_reportedThisTick = false;
+
+    if (!be_getglobal(m_vm, "on_ws") || !be_isfunction(m_vm, -1))
+    {
+        be_pop(m_vm, be_top(m_vm));
+        result.ok = true; // no on_ws(): the script does not use WebSockets
+        return result;
+    }
+    be_pushstring(m_vm, peer ? peer : "");
+    be_pushstring(m_vm, event == WsEvent::Open ? "open" : (event == WsEvent::Text ? "text" : "close"));
+    if (event == WsEvent::Text && text)
+        be_pushnstring(m_vm, text, length);
+    else
+        be_pushnil(m_vm);
+    return finishCall(runProtected(3, result.error, sizeof(result.error)), result);
+}
+
+DlmScriptVm::TickResult DlmScriptVm::finishCall(bool ok, TickResult& result)
+{
+    result.ok = ok;
+    // Everything a call built is garbage now; collect it so the arena's
+    // resident figure (and the next call's headroom) is real, not deferred.
     be_gc_collect(m_vm);
     result.heartbeats = m_heartbeats;
     result.httpCalls = m_httpCalls;
+    result.reported = m_reportedThisTick;
     if (result.ok)
         result.advisory = m_reported; // present=false if the script never reported
     else
     {
+        result.reported = true;
         result.advisory.present = false;
         std::snprintf(result.advisory.action, sizeof(result.advisory.action), "error: %.24s", result.error);
     }
@@ -240,6 +277,8 @@ void DlmScriptVm::registerModule()
         {"report", nativeReport},
         {"log", nativeLog},
         {"secret", nativeSecret},
+        {"ws_send", nativeWsSend},
+        {"ws_peers", nativeWsPeers},
     };
     for (const Entry& entry : ENTRIES)
     {
@@ -295,6 +334,16 @@ int DlmScriptVm::nativeTelemetry(bvm* vm)
     // to `.p`, then it is popped to leave the instance as the return value.
     be_newobject(vm, "map");
     mapInsertInt(vm, "epoch", static_cast<bint>(t.epochSeconds));
+    // The same instant as ISO 8601 UTC ("2026-10-01T00:20:23Z"), which most
+    // protocols want and which costs a script ~3 KB of arena to compute.
+    {
+        char iso[24] = "1970-01-01T00:00:00Z";
+        const time_t seconds = static_cast<time_t>(t.epochSeconds);
+        struct tm utc = {};
+        if (gmtime_r(&seconds, &utc))
+            std::strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", &utc);
+        mapInsertString(vm, "time_utc", iso);
+    }
     mapInsertBool(vm, "time_trusted", t.timeTrusted);
     mapInsertBool(vm, "ct_valid", t.ctReadingsValid);
     mapInsertReal(vm, "service_leg_a_amps", t.serviceLegAAmps);
@@ -550,5 +599,42 @@ int DlmScriptVm::nativeSecret(bvm* vm)
         be_pushstring(vm, value);
     else
         be_pushnil(vm);
+    be_return(vm);
+}
+
+// dlm.ws_send(peer, text) -> true if the frame went out
+int DlmScriptVm::nativeWsSend(bvm* vm)
+{
+    DlmScriptVm& self = *s_active;
+    bool sent = false;
+    if (be_top(vm) >= 2 && be_isstring(vm, 1) && be_isstring(vm, 2) && self.m_host.wsSend &&
+        self.m_wsSends < WS_SENDS_PER_CALL)
+    {
+        const char* text = be_tostring(vm, 2);
+        const size_t length = static_cast<size_t>(be_strlen(vm, 2));
+        if (length > 0 && length <= WS_FRAME_MAX)
+        {
+            ++self.m_wsSends;
+            sent = self.m_host.wsSend(self.m_host.context, be_tostring(vm, 1), text, length);
+        }
+    }
+    be_pushbool(vm, sent ? 1 : 0);
+    be_return(vm);
+}
+
+// dlm.ws_peers() -> list of connected peer ids
+int DlmScriptVm::nativeWsPeers(bvm* vm)
+{
+    DlmScriptVm& self = *s_active;
+    const char* peers[WS_PEERS_MAX] = {};
+    const size_t count = self.m_host.wsPeers ? self.m_host.wsPeers(self.m_host.context, peers, WS_PEERS_MAX) : 0;
+    be_newobject(vm, "list");
+    for (size_t i = 0; i < count && i < WS_PEERS_MAX; ++i)
+    {
+        be_pushstring(vm, peers[i] ? peers[i] : "");
+        be_data_push(vm, -2);
+        be_pop(vm, 1);
+    }
+    be_pop(vm, 1);
     be_return(vm);
 }
