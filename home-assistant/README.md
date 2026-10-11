@@ -83,8 +83,48 @@ whether Home Assistant is running or not.
         alt="Home Assistant's entity search for 'chargexcel', listing all 13 ChargeXcel sensors and binary sensors.">
 
    The same list is under **Settings → Devices & services → Entities**.
-8. **Optional:** in **Settings → Dashboards → Energy**, add
-   `sensor.chargexcel_charging_station_energy` as an individual device.
+8. **Optional: add the car to the Energy dashboard.** Go to
+   **Settings → Dashboards → Energy**. Under **Individual electrical
+   devices**, choose **Add device** and pick **ChargeXcel charging station
+   energy**. Home Assistant says new data can take up to 2 hours to appear.
+   After that, the car's charging shows up hour by hour, separate from
+   everything else:
+
+   <img src="images/energy.png" width="600"
+        alt="Home Assistant's Energy dashboard, 'Individual devices detail' chart, showing the car's charging energy per hour on one evening.">
+9. **Optional: add the ready-made dashboard.** See below.
+
+## A ready-made dashboard
+
+[`dashboard.yaml`](dashboard.yaml) is a complete ChargeXcel dashboard built
+only from Home Assistant's own cards, so there is nothing to install from
+HACS:
+
+<img src="images/dashboard.png" width="800"
+     alt="The ChargeXcel dashboard in Home Assistant: dials for spare capacity and car current, tiles for charging state and each service leg, charts of the last 12 hours, the car's energy per day and each leg's 7-day peak.">
+
+- **Right now:** how many amps are spare for the car and how many it is
+  drawing, what ChargeXcel is doing, and the current on each service leg. A red
+  **Needs attention** tile appears only when ChargeXcel is not running
+  normally: charging paused to protect your service, too hot, latched off, or
+  offline.
+- **Today:** the car against the spare capacity it is allowed, and both
+  service legs with the car. With net-zero (solar) charging on, the car's line
+  follows the sun.
+- **Energy & last 7 days:** the car's energy today, over the last 7 days and
+  per day, and the highest each service leg reached this week. Compare those
+  peaks with your service rating before adding a heat pump, a hot tub or a
+  second EV.
+
+To use it: **Settings → Dashboards → Add dashboard → New dashboard from
+scratch**. Open the new dashboard, click the pencil, then **⋮ → Raw
+configuration editor**, replace everything with the contents of
+`dashboard.yaml`, and save. The file's first lines list the two things worth
+adjusting: the dials' maximum (your charging station's rating) and, if you
+like, your service rating in the peak cards' names.
+
+The 7-day cards and the per-day chart use Home Assistant's long-term
+statistics, so they start nearly empty and fill in over the first week.
 
 ## Good to know
 
@@ -98,10 +138,52 @@ whether Home Assistant is running or not.
   at zero the day you add them. ChargeXcel keeps its own long-term history on
   its `/energy` page, and as a CSV download from `/api/energy/export.csv`,
   which accepts the same `X-API-Key` header.
+- **An idle charging station reads 0 W.** With nothing drawing, the
+  charging-station current sensor rests at about 0.06-0.08 A. The package
+  counts anything under 0.1 A as zero, so that resting noise doesn't add
+  phantom kWh to the Energy dashboard. A car never charges below 6 A, so real
+  charging is unaffected. If you installed the package before this change,
+  copy the new `chargexcel.yaml` over the old one and restart.
 - **Older firmware.** The safety-state, headroom and firmware sensors need
   firmware that reports `"schema": 3` or later on `/api/diagnostics`. Older
   firmware still gives you the currents and relay state, and shows the rest
   as *unavailable*.
+
+## Troubleshooting
+
+**Every ChargeXcel sensor shows *unavailable*.** Home Assistant cannot read
+the unit. Check it from any computer on the same network, using the same
+address and key as `secrets.yaml`:
+
+```sh
+curl -H "X-API-Key: paste-the-key-here" http://chargexcel-XXXX.local/api/diagnostics
+```
+
+- **You get JSON back:** the unit is fine. Check `secrets.yaml` for a typo,
+  check that the key is in quotes, then restart Home Assistant.
+- **`401`:** the key is wrong, or it was regenerated on the unit's
+  **API key** page. Copy the current key into `secrets.yaml` and restart.
+- **The name doesn't resolve, or the request times out:** your network may
+  not pass `.local` names to Home Assistant. This is most common when Home
+  Assistant runs in Docker. Use the unit's IP address instead, and ask your
+  router to always give the unit the same address.
+- Home Assistant's own error is under **Settings → System → Logs**. Search for
+  `rest`.
+
+**Only the safety state, headroom and firmware sensors are *unavailable*.**
+The unit's firmware is older than `"schema": 3`. See "Older firmware" above.
+
+**The sensors drop out for a few seconds now and then.** That is usually a
+restart or a firmware update on the unit, and they come back on their own. If
+it happens often, check that nothing else is polling the unit faster than
+every 5 seconds.
+
+**The energy cards or the per-day chart are empty.** They start from zero on
+the day you add the package. The statistics cards can lag by up to an hour,
+and the Energy dashboard by up to 2 hours.
+
+**The house power and energy sensors look wrong.** If you have solar panels,
+delete them. See step 6.
 
 ## The JSON behind it
 

@@ -1,0 +1,252 @@
+# A ready-made ChargeXcel dashboard for Home Assistant.
+#
+# Uses only Home Assistant's built-in cards: nothing to install from HACS.
+# It needs the sensors from chargexcel.yaml in this folder.
+#
+# To use it:
+#   Settings -> Dashboards -> + Add dashboard -> New dashboard from scratch.
+#   Open the new dashboard, click the pencil, then the three dots ->
+#   Raw configuration editor. Replace everything with this file and save.
+#
+# Two things to adjust for your home:
+#   - The two dials go up to 32 A. If your charging station is rated for more
+#     (or less), change both "max: 32" lines to its rating.
+#   - "Peak, 7 days" is easiest to read against your service rating (60 A,
+#     100 A, 200 A, ...). Rename those two cards if you like, e.g.
+#     "Leg 1 peak (of 100 A)".
+#
+# The 7-day cards and the energy chart use Home Assistant's long-term
+# statistics, so they fill in over the first week after you add the package.
+
+title: ChargeXcel
+views:
+  - title: ChargeXcel
+    path: chargexcel
+    icon: mdi:home-lightning-bolt
+    type: sections
+    max_columns: 3
+    dense_section_placement: true
+    badges:
+      - type: entity
+        entity: sensor.chargexcel_safety_state
+        name: ChargeXcel
+        show_name: true
+        show_state: true
+        show_icon: true
+        color: green
+      - type: entity
+        entity: binary_sensor.chargexcel_commissioned
+        name: Commissioned
+        show_name: true
+        show_state: true
+        show_icon: true
+        color: green
+      - type: entity
+        entity: sensor.chargexcel_firmware
+        name: Firmware
+        show_name: true
+        show_state: true
+        show_icon: true
+    sections:
+      # What is happening right now.
+      - type: grid
+        cards:
+          - type: heading
+            heading: Right now
+            icon: mdi:flash
+          - type: gauge
+            entity: sensor.chargexcel_headroom
+            name: Spare for the car
+            min: 0
+            max: 32
+            needle: true
+            severity:
+              red: 0
+              yellow: 6
+              green: 12
+            grid_options:
+              columns: 6
+              rows: auto
+          - type: gauge
+            entity: sensor.chargexcel_charging_station_current
+            name: Car charging
+            min: 0
+            max: 32
+            segments:
+              - from: 0
+                color: "#34c759"
+            grid_options:
+              columns: 6
+              rows: auto
+          # Only appears when ChargeXcel is not in normal running: charging
+          # paused to protect the service, too hot, latched off, or offline.
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.chargexcel_safety_state
+                state_not: RUNNING
+            card:
+              type: tile
+              entity: sensor.chargexcel_safety_state
+              name: Needs attention
+              icon: mdi:alert
+              color: red
+              grid_options:
+                columns: 12
+          - type: tile
+            entity: sensor.chargexcel_safety_state
+            name: Charging state
+            icon: mdi:shield-check
+            color: green
+            state_content:
+              - state
+              - last_changed
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: binary_sensor.chargexcel_relay_closed
+            name: Charger power
+            icon: mdi:power-plug
+            color: green
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.chargexcel_service_l1_current
+            name: House leg 1
+            icon: mdi:transmission-tower
+            color: orange
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.chargexcel_service_l2_current
+            name: House leg 2
+            icon: mdi:transmission-tower
+            color: orange
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.chargexcel_charging_station_power
+            name: Car power
+            icon: mdi:ev-station
+            color: green
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: binary_sensor.chargexcel_relay_permitted
+            name: Safe to charge
+            icon: mdi:check-decagram
+            color: green
+            grid_options:
+              columns: 6
+          - type: history-graph
+            title: What ChargeXcel did
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+            entities:
+              - entity: sensor.chargexcel_safety_state
+                name: State
+              - entity: binary_sensor.chargexcel_relay_closed
+                name: Charger power
+
+      # The last 12 hours.
+      - type: grid
+        cards:
+          - type: heading
+            heading: Today
+            icon: mdi:chart-line
+          # With net-zero (solar) charging on, the spare-capacity line is the
+          # figure the car is steered to, so the car's line follows the sun.
+          - type: history-graph
+            title: Car vs spare capacity (A)
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+              rows: 4
+            entities:
+              - entity: sensor.chargexcel_headroom
+                name: Spare
+              - entity: sensor.chargexcel_charging_station_current
+                name: Car
+          - type: history-graph
+            title: House legs and car (A)
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+              rows: 4
+            entities:
+              - entity: sensor.chargexcel_service_l1_current
+                name: Leg 1
+              - entity: sensor.chargexcel_service_l2_current
+                name: Leg 2
+              - entity: sensor.chargexcel_charging_station_current
+                name: Car
+
+      # Energy, and how close the service gets to its limit.
+      - type: grid
+        cards:
+          - type: heading
+            heading: Energy & last 7 days
+            icon: mdi:calendar-week
+          - type: statistic
+            entity: sensor.chargexcel_charging_station_energy
+            name: Car today
+            icon: mdi:ev-station
+            stat_type: change
+            period:
+              calendar:
+                period: day
+            grid_options:
+              columns: 6
+              rows: 2
+          - type: statistic
+            entity: sensor.chargexcel_charging_station_energy
+            name: Car, 7 days
+            icon: mdi:calendar-week
+            stat_type: change
+            period:
+              rolling_window:
+                duration:
+                  days: 7
+            grid_options:
+              columns: 6
+              rows: 2
+          - type: statistics-graph
+            title: Car energy per day (kWh)
+            chart_type: bar
+            period: day
+            days_to_show: 7
+            stat_types:
+              - change
+            hide_legend: true
+            entities:
+              - sensor.chargexcel_charging_station_energy
+            grid_options:
+              columns: 12
+              rows: 3
+          # The highest each leg reached this week. Compare with your service
+          # rating before adding a heat pump, a hot tub or a second EV.
+          - type: statistic
+            entity: sensor.chargexcel_service_l1_current
+            name: Leg 1 peak, 7 days
+            icon: mdi:arrow-collapse-up
+            stat_type: max
+            period:
+              rolling_window:
+                duration:
+                  days: 7
+            grid_options:
+              columns: 6
+              rows: 2
+          - type: statistic
+            entity: sensor.chargexcel_service_l2_current
+            name: Leg 2 peak, 7 days
+            icon: mdi:arrow-collapse-up
+            stat_type: max
+            period:
+              rolling_window:
+                duration:
+                  days: 7
+            grid_options:
+              columns: 6
+              rows: 2

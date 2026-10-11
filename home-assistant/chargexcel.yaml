@@ -98,8 +98,11 @@ template:
         device_class: power
         state_class: measurement
         availability: "{{ has_value('sensor.chargexcel_charging_station_current') }}"
+        # Below 0.1 A is the current sensor's resting noise (about 0.06-0.08 A
+        # with nothing drawing), not real draw, so it counts as zero.
         state: >-
-          {{ (states('sensor.chargexcel_charging_station_current') | float * 240) | round(0) }}
+          {% set amps = states('sensor.chargexcel_charging_station_current') | float %}
+          {{ 0 if amps < 0.1 else (amps * 240) | round(0) }}
       - name: ChargeXcel house power
         unique_id: chargexcel_house_power
         unit_of_measurement: W
@@ -113,6 +116,7 @@ template:
           {% set legs = states('sensor.chargexcel_service_l1_current') | float
                       + states('sensor.chargexcel_service_l2_current') | float %}
           {% set station = states('sensor.chargexcel_charging_station_current') | float %}
+          {% set station = 0 if station < 0.1 else station %}
           {{ [120 * legs - 240 * station, 0] | max | round(0) }}
 
 # Energy (kWh) for Home Assistant's Energy dashboard, integrated from the
