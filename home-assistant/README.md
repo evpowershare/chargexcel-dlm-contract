@@ -93,6 +93,7 @@ whether Home Assistant is running or not.
    <img src="images/energy.png" width="600"
         alt="Home Assistant's Energy dashboard, 'Individual devices detail' chart, showing the car's charging energy per hour on one evening.">
 9. **Optional: add the ready-made dashboard.** See below.
+10. **Optional: solar charging graphs.** See [Solar charging graphs](#solar-charging-graphs-optional).
 
 ## A ready-made dashboard
 
@@ -125,6 +126,55 @@ like, your service rating in the peak cards' names.
 
 The 7-day cards and the per-day chart use Home Assistant's long-term
 statistics, so they start nearly empty and fill in over the first week.
+
+## Solar charging graphs (optional)
+
+If you use ChargeXcel's solar charging, a small add-on shows what it is doing.
+ChargeXcel's current sensors measure how much current flows, not which way,
+so on their own they can't tell export from import. ChargeXcel works the
+direction out by stepping the car's charge rate and watching each leg. This
+add-on reads that call and draws each leg as **import above zero, export
+below zero**:
+
+<img src="images/solar.png" width="800"
+     alt="Home Assistant history: both service legs just below zero (exporting) while the car charges at 9 to 13 A through the morning, then dropping to about minus 12 A each when the car is full and the surplus goes back to the grid.">
+
+It adds:
+
+| Entity | What it means |
+|---|---|
+| `sensor.chargexcel_net_zero_phase` | What solar charging is doing: `tracking` (following the sun), `resolving` (working out which way power flows), `probing` (a small test step), `waiting`, `outside_window` or `off`. |
+| `sensor.chargexcel_net_zero_mode` | `min_solar` or `solar_only`. |
+| `sensor.chargexcel_leg_a_direction`, `..._leg_b_direction` | `export`, `import` or `unknown`, for service leg 1 and leg 2. |
+| `sensor.chargexcel_leg_a_signed`, `..._leg_b_signed` | Each leg's current, negative when exporting. *Unavailable* while ChargeXcel isn't sure of the direction. |
+| `sensor.chargexcel_allowed_amps_before_solar` | The most the car may safely draw. |
+| `sensor.chargexcel_allowed_amps_after_solar` | What solar charging is steering the car to. |
+| `sensor.chargexcel_solar_holding_back` | The gap between the two: how much solar charging is holding the car back. |
+
+It reads ChargeXcel's plugin feed, so it needs its own key:
+
+1. **Add a plugin on ChargeXcel.** Open its web page, go to **Load
+   Management Plugins** (`/dlm`), open **External plugins**, type
+   `Home Assistant` as the name and press **Add plugin**. Copy the key it
+   shows. It is shown only once; if you lose it, revoke the plugin and add a
+   new one.
+2. **Add two lines to `secrets.yaml`,** keeping the quotes around the key:
+   ```yaml
+   chargexcel_tick_url: http://chargexcel-XXXX.local/api/dlm/v1/tick
+   chargexcel_dlm_key: "paste-the-key-here"
+   ```
+3. **Copy [`chargexcel_solar.yaml`](chargexcel_solar.yaml)** into the
+   `packages` folder next to `chargexcel.yaml`, and restart Home Assistant.
+4. **Optional: add the Solar charging section to the dashboard.** Open it,
+   click the pencil, then **⋮ → Raw configuration editor**, and paste the
+   contents of [`dashboard-solar-section.yaml`](dashboard-solar-section.yaml)
+   at the end of the `sections:` list.
+
+On ChargeXcel's `/dlm` page, Home Assistant now shows as an online plugin
+"Logging to Home Assistant". That is all a plugin can do: it reports that it
+is there. Nothing it sends changes what ChargeXcel does. The import and export
+signs are ChargeXcel's own judgement, made from how the legs respond to the
+car, not a reading from a separate meter. Needs firmware 0.9.24 or later.
 
 ## Good to know
 

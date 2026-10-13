@@ -1,0 +1,67 @@
+# A "Solar charging" section for the ready-made dashboard (dashboard.yaml).
+# Needs chargexcel_solar.yaml as well as chargexcel.yaml.
+#
+# To add it: open the dashboard, click the pencil, then the three dots ->
+# Raw configuration editor. Paste everything below this comment block at the
+# end of the "sections:" list (same indentation as the other "- type: grid"
+# sections), then save.
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Solar charging
+            icon: mdi:solar-power-variant
+          - type: tile
+            entity: sensor.chargexcel_net_zero_phase
+            name: Solar charging
+            icon: mdi:solar-power-variant
+            color: amber
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.chargexcel_solar_holding_back
+            name: Held back
+            icon: mdi:weather-sunny
+            color: amber
+            grid_options:
+              columns: 6
+          # The car against what it may draw with and without solar charging.
+          - type: history-graph
+            title: Car vs safe limit vs solar target (A)
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+              rows: 4
+            entities:
+              - entity: sensor.chargexcel_allowed_amps_before_solar
+                name: Safe limit
+              - entity: sensor.chargexcel_allowed_amps_after_solar
+                name: Solar target
+              - entity: sensor.chargexcel_charging_station_current
+                name: Car
+          # Below zero = sending power to the grid.
+          - type: history-graph
+            title: "Grid: import + / export − (A)"
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+              rows: 4
+            entities:
+              - entity: sensor.chargexcel_leg_a_signed
+                name: Leg 1
+              - entity: sensor.chargexcel_leg_b_signed
+                name: Leg 2
+              - entity: sensor.chargexcel_charging_station_current
+                name: Car
+          - type: history-graph
+            title: What solar charging did
+            hours_to_show: 12
+            grid_options:
+              columns: 12
+            entities:
+              - entity: sensor.chargexcel_net_zero_phase
+                name: Phase
+              - entity: sensor.chargexcel_leg_a_direction
+                name: Leg 1
+              - entity: sensor.chargexcel_leg_b_direction
+                name: Leg 2

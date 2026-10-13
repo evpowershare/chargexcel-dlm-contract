@@ -1,0 +1,115 @@
+# ChargeXcel solar charging for Home Assistant -- an optional, read-only add-on
+# to chargexcel.yaml. See "Solar charging graphs" in README.md.
+#
+# It reads ChargeXcel's plugin feed (POST /api/dlm/v1/tick) to show what
+# solar charging is doing: its phase, which way ChargeXcel believes each
+# service leg is flowing, and how much it is holding the car back. The current
+# sensors can't tell export from import on their own; the signed-leg sensors
+# below use ChargeXcel's own direction call to show export as negative.
+#
+# Read-only: a plugin can only report "present" and a short status line that
+# appears on ChargeXcel's /dlm page. Nothing it sends changes what ChargeXcel
+# does.
+#
+# Add two lines to secrets.yaml (keep the quotes around the key):
+#
+#   chargexcel_tick_url: http://chargexcel-XXXX.local/api/dlm/v1/tick
+#   chargexcel_dlm_key: "<the key /dlm shows when you add the plugin>"
+
+rest:
+  - resource: !secret chargexcel_tick_url
+    method: POST
+    headers:
+      X-DLM-Key: !secret chargexcel_dlm_key
+      Content-Type: application/x-www-form-urlencoded
+    payload: "present=1&action=Logging to Home Assistant"
+    scan_interval: 10
+    timeout: 5
+    sensor:
+      # off, outside_window, resolving (working out which way power flows),
+      # tracking (following the sun), probing (a small test step) or waiting.
+      - name: ChargeXcel net-zero phase
+        unique_id: chargexcel_netzero_phase
+        value_template: "{{ value_json.telemetry.netzero }}"
+        icon: mdi:solar-power-variant
+      # min_solar or solar_only.
+      - name: ChargeXcel net-zero mode
+        unique_id: chargexcel_netzero_mode
+        value_template: "{{ value_json.telemetry.netzero_mode }}"
+        icon: mdi:tune-variant
+      # export, import or unknown. Leg A is service leg 1, leg B is leg 2.
+      - name: ChargeXcel leg A direction
+        unique_id: chargexcel_leg_a_direction
+        value_template: "{{ value_json.telemetry.netzero_leg_a }}"
+        icon: mdi:swap-vertical
+      - name: ChargeXcel leg B direction
+        unique_id: chargexcel_leg_b_direction
+        value_template: "{{ value_json.telemetry.netzero_leg_b }}"
+        icon: mdi:swap-vertical
+      # The leg currents from the same reading as the directions, so a sign
+      # and its value always belong together.
+      - name: ChargeXcel tick leg A current
+        unique_id: chargexcel_tick_leg_a_current
+        value_template: "{{ value_json.telemetry.service_leg_a_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: ChargeXcel tick leg B current
+        unique_id: chargexcel_tick_leg_b_current
+        value_template: "{{ value_json.telemetry.service_leg_b_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      # What the car may draw without solar charging (the safe limit) and with
+      # it (the figure the car is steered to).
+      - name: ChargeXcel allowed amps before solar
+        unique_id: chargexcel_safety_allowed_amps
+        value_template: "{{ value_json.telemetry.safety_allowed_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: ChargeXcel allowed amps after solar
+        unique_id: chargexcel_allowed_amps
+        value_template: "{{ value_json.telemetry.allowed_amps }}"
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+
+template:
+  - sensor:
+      # Import positive, export negative. Unavailable while ChargeXcel isn't
+      # sure which way the leg is flowing.
+      - name: ChargeXcel leg A signed
+        unique_id: chargexcel_leg_a_signed
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+        availability: >-
+          {{ states('sensor.chargexcel_leg_a_direction') in ['import', 'export']
+             and has_value('sensor.chargexcel_tick_leg_a_current') }}
+        state: >-
+          {% set a = states('sensor.chargexcel_tick_leg_a_current') | float %}
+          {{ (-a if states('sensor.chargexcel_leg_a_direction') == 'export' else a) | round(2) }}
+      - name: ChargeXcel leg B signed
+        unique_id: chargexcel_leg_b_signed
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+        availability: >-
+          {{ states('sensor.chargexcel_leg_b_direction') in ['import', 'export']
+             and has_value('sensor.chargexcel_tick_leg_b_current') }}
+        state: >-
+          {% set b = states('sensor.chargexcel_tick_leg_b_current') | float %}
+          {{ (-b if states('sensor.chargexcel_leg_b_direction') == 'export' else b) | round(2) }}
+      # How far solar charging is holding the car below its safe limit.
+      - name: ChargeXcel solar holding back
+        unique_id: chargexcel_solar_holding_back
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+        availability: >-
+          {{ has_value('sensor.chargexcel_allowed_amps_before_solar')
+             and has_value('sensor.chargexcel_allowed_amps_after_solar') }}
+        state: >-
+          {{ ([states('sensor.chargexcel_allowed_amps_before_solar') | float
+              - states('sensor.chargexcel_allowed_amps_after_solar') | float, 0] | max) | round(1) }}
