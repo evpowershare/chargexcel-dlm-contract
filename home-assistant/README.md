@@ -21,15 +21,19 @@ whether Home Assistant is running or not.
 | `sensor.chargexcel_service_l1_current`, `..._l2_current` | Current on each leg of your electrical service, in amps. This is the whole house, including the charging station. |
 | `sensor.chargexcel_charging_station_current` | Current the charging station is drawing, in amps. |
 | `sensor.chargexcel_headroom` | How many amps ChargeXcel works out the charging station can safely use right now. With net-zero (solar) charging on, this is the lowered figure. It shows *unavailable* while ChargeXcel has no trustworthy figure. |
-| `sensor.chargexcel_safety_state` | What ChargeXcel is doing. See the table below. |
+| `sensor.chargexcel_status` | What ChargeXcel is doing, in plain words: *Charging allowed*, *Paused to protect your panel*, *Too hot, paused*, *Offline*, and so on. Best for dashboards and alerts. |
+| `sensor.chargexcel_safety_state` | The same, as ChargeXcel's own state name. See the table below. |
 | `binary_sensor.chargexcel_relay_closed` | On when the relay is closed and the charging station has power. |
 | `binary_sensor.chargexcel_relay_permitted` | On when ChargeXcel's safety logic allows the relay to close. |
 | `binary_sensor.chargexcel_commissioned` | On once an electrician has completed setup. |
 | `sensor.chargexcel_firmware` | The firmware version running on the unit. |
 | `sensor.chargexcel_charging_station_power`, `..._house_power` | Power in watts, worked out from the currents the same way ChargeXcel's own `/energy` page does it. |
 | `sensor.chargexcel_charging_station_energy`, `..._house_energy` | Running kWh totals for Home Assistant's Energy dashboard. |
+| `sensor.chargexcel_charging_station_energy_today` | The car's kWh since midnight, for alerts. |
 
 ### Safety states
+
+`sensor.chargexcel_status` puts each of these into plain words.
 
 | State | Meaning |
 |---|---|
@@ -75,12 +79,12 @@ whether Home Assistant is running or not.
      sensors. ChargeXcel's current sensors can't tell exported power from
      imported, so that figure is not meaningful.
 7. **Restart Home Assistant.** The sensors fill in within about 10 seconds.
-   ChargeXcel shows up as 13 entities, not as a device, so you won't find it
+   ChargeXcel shows up as 15 entities, not as a device, so you won't find it
    on the Devices tab. Press **`e`** anywhere in Home Assistant and search
    **chargexcel** to check they're all there:
 
    <img src="images/entities.png" width="480"
-        alt="Home Assistant's entity search for 'chargexcel', listing all 13 ChargeXcel sensors and binary sensors.">
+        alt="Home Assistant's entity search for 'chargexcel', listing ChargeXcel's sensors and binary sensors.">
 
    The same list is under **Settings → Devices & services → Entities**.
 8. **Optional: add the car to the Energy dashboard.** Go to
@@ -93,7 +97,9 @@ whether Home Assistant is running or not.
    <img src="images/energy.png" width="600"
         alt="Home Assistant's Energy dashboard, 'Individual devices detail' chart, showing the car's charging energy per hour on one evening.">
 9. **Optional: add the ready-made dashboard.** See below.
-10. **Optional: solar charging graphs.** See [Solar charging graphs](#solar-charging-graphs-optional).
+10. **Optional: what charging costs.** See [What charging costs](#what-charging-costs-optional).
+11. **Optional: alerts on your phone.** See [Alerts on your phone](#alerts-on-your-phone-optional).
+12. **Optional: solar charging graphs.** See [Solar charging graphs](#solar-charging-graphs-optional).
 
 ## A ready-made dashboard
 
@@ -126,6 +132,64 @@ like, your service rating in the peak cards' names.
 
 The 7-day cards and the per-day chart use Home Assistant's long-term
 statistics, so they start nearly empty and fill in over the first week.
+
+## What charging costs (optional)
+
+[`chargexcel_cost.yaml`](chargexcel_cost.yaml) prices the car's power by time
+of day, so a time-of-use plan is counted the way your utility bills it. It
+adds:
+
+| Entity | What it means |
+|---|---|
+| `sensor.chargexcel_rate_period` | `Peak`, `Part peak` or `Off peak` right now. |
+| `sensor.chargexcel_electricity_price` | The price per kWh right now. |
+| `sensor.chargexcel_charging_cost_rate` | What charging costs per hour at this moment; zero when the car isn't drawing. |
+| `sensor.chargexcel_charging_cost` | The running total, for cards and charts. |
+| `sensor.chargexcel_charging_cost_today` | The cost since midnight, for alerts. |
+
+1. **Copy [`chargexcel_cost.yaml`](chargexcel_cost.yaml)** into the
+   `packages` folder next to `chargexcel.yaml`.
+2. **Put in your plan.** The file comes set up for PG&E's EV2-A plan. Near the
+   top are two marked places: the hours of each period, and the price per
+   kWh for each period in summer and winter. For a flat rate, make every hour
+   `Off peak` and give it your one price. Billed in another currency? Change
+   `USD` in the three unit lines.
+3. **Restart Home Assistant.**
+4. **Optional: add the cost cards to the dashboard.** Open it, click the
+   pencil, then **⋮ → Raw configuration editor**, and paste the contents of
+   [`dashboard-cost-section.yaml`](dashboard-cost-section.yaml) at the end of
+   the `sections:` list.
+
+It counts the charging station only, from the day you add it, at the prices
+you enter. Fixed monthly charges and credits on your bill aren't included.
+
+## Alerts on your phone (optional)
+
+Two ready-made automations ("blueprints") send a notification to a phone or
+tablet that has the Home Assistant app. Click a link to import one into your
+Home Assistant, then choose **Create automation** and pick your device:
+
+- **Tell me when charging is paused**
+  ([import](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fevpowershare%2Fchargexcel-dlm-contract%2Fblob%2Fmain%2Fhome-assistant%2Fblueprints%2Fchargexcel_status_alert.yaml),
+  [file](blueprints/chargexcel_status_alert.yaml)). Fires when ChargeXcel
+  pauses charging to protect your service, gets too hot, stops and waits for
+  you, reports a fault, or can't be reached. It can also tell you when
+  charging is allowed again.
+- **Tell me when the car stops charging**
+  ([import](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fevpowershare%2Fchargexcel-dlm-contract%2Fblob%2Fmain%2Fhome-assistant%2Fblueprints%2Fchargexcel_car_stopped_alert.yaml),
+  [file](blueprints/chargexcel_car_stopped_alert.yaml)). Says how many kWh
+  went into the car today and, with the cost add-on, what it cost. It stays
+  quiet when ChargeXcel itself paused charging, since the other alert covers
+  that.
+
+If the import link doesn't open your Home Assistant, go to **Settings →
+Automations & scenes → Blueprints → Import blueprint** and paste the file's
+GitHub address.
+
+Your own automations can react to ChargeXcel too, for example switching off a
+dehumidifier on a smart plug while spare capacity is low. They can't change
+what ChargeXcel does: its protection runs on the unit, whatever Home Assistant
+decides.
 
 ## Solar charging graphs (optional)
 

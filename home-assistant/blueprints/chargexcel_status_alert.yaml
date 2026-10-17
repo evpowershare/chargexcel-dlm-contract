@@ -1,0 +1,122 @@
+blueprint:
+  name: ChargeXcel - tell me when charging is paused
+  description: >-
+    Sends a notification to your phone or tablet when ChargeXcel pauses
+    charging to protect your electrical service, gets too hot, stops and waits
+    for you, reports a fault, or can't be reached. Can also tell you when
+    charging is allowed again.
+
+
+    Needs `sensor.chargexcel_status` from the ChargeXcel package
+    (chargexcel.yaml) and the Home Assistant app on the device. Read-only:
+    ChargeXcel decides on its own; this only tells you what it decided.
+  domain: automation
+  source_url: https://github.com/evpowershare/chargexcel-dlm-contract/blob/main/home-assistant/blueprints/chargexcel_status_alert.yaml
+  input:
+    notify_device:
+      name: Phone or tablet
+      description: A device with the Home Assistant app installed.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    status_sensor:
+      name: ChargeXcel status sensor
+      default: sensor.chargexcel_status
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    alert_on:
+      name: Tell me when ChargeXcel is
+      default:
+        - Paused to protect your panel
+        - Too hot, paused
+        - Stopped, needs you
+        - Fault, charger off
+        - Offline
+      selector:
+        select:
+          multiple: true
+          options:
+            - Paused to protect your panel
+            - Too hot, paused
+            - Stopped, needs you
+            - Fault, charger off
+            - Offline
+            - Switched off on the unit
+    offline_for:
+      name: Count it as offline after
+      description: >-
+        ChargeXcel restarts briefly after a firmware update, and Wi-Fi can
+        drop for a moment. Wait this long before telling you it's offline.
+      default:
+        minutes: 5
+      selector:
+        duration: {}
+    tell_resumed:
+      name: Also tell me when charging is allowed again
+      default: true
+      selector:
+        boolean: {}
+
+mode: queued
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input status_sensor
+    id: changed
+  - trigger: state
+    entity_id: !input status_sensor
+    to: Offline
+    for: !input offline_for
+    id: offline
+
+variables:
+  alert_on: !input alert_on
+  tell_resumed: !input tell_resumed
+  new: "{{ trigger.to_state.state }}"
+  old: "{{ trigger.from_state.state if trigger.from_state else '' }}"
+  details:
+    "Paused to protect your panel": >-
+      Power use in the house went up, so ChargeXcel paused the car to protect
+      your electrical service. Charging resumes by itself when there's room.
+    "Too hot, paused": >-
+      ChargeXcel paused charging because it is running hot. It resumes by
+      itself once it has cooled down.
+    "Stopped, needs you": >-
+      ChargeXcel stopped charging after repeated trips and is waiting for you.
+      Check its web page.
+    "Fault, charger off": >-
+      ChargeXcel doesn't trust one of its sensors or its switch, so it has
+      switched the charging station off. Check its web page.
+    "Switched off on the unit": "The charging station was switched off from ChargeXcel's web page."
+
+actions:
+  - choose:
+      - conditions: "{{ trigger.id == 'offline' and 'Offline' in alert_on }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: ChargeXcel is offline
+            message: >-
+              Home Assistant can't reach ChargeXcel. ChargeXcel keeps
+              protecting your service on its own; check its Wi-Fi and power.
+      - conditions: "{{ trigger.id == 'changed' and new != 'Offline' and new in alert_on }}"
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "ChargeXcel: {{ new }}"
+            message: "{{ details.get(new, new) }}"
+      - conditions: >-
+          {{ trigger.id == 'changed' and tell_resumed and new == 'Charging allowed'
+             and old in alert_on and old != 'Offline' }}
+        sequence:
+          - domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "ChargeXcel: charging allowed again"
+            message: The car can charge again.

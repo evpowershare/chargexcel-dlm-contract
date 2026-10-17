@@ -92,6 +92,30 @@ rest:
 # current sensors cannot tell export from import) -- delete it.
 template:
   - sensor:
+      # What ChargeXcel is doing, in plain words, for dashboards and alerts.
+      # "Offline" when Home Assistant cannot reach the unit.
+      - name: ChargeXcel status
+        unique_id: chargexcel_status
+        icon: mdi:shield-home
+        state: >-
+          {% set s = states('sensor.chargexcel_safety_state') %}
+          {% set words = {
+               'RUNNING': 'Charging allowed',
+               'RECONNECT_PENDING': 'Resuming shortly',
+               'SHED_OFF': 'Paused to protect your panel',
+               'THERMAL_OFF': 'Too hot, paused',
+               'TRIP_LATCHED': 'Stopped, needs you',
+               'SENSOR_FAULT': 'Fault, charger off',
+               'ACTUATOR_FAULT': 'Fault, charger off',
+               'MANUAL_OFF': 'Switched off on the unit',
+               'READY_OPEN': 'Ready, charger off',
+               'INTERNAL_CT_VERIFYING': 'Self-check',
+               'CONFIG_REQUIRED': 'Needs electrician setup',
+               'BOOT_INHIBITED': 'Starting up',
+               'OTA_INHIBITED': 'Updating',
+               'unavailable': 'Offline',
+               'unknown': 'Offline'} %}
+          {{ words.get(s, s) }}
       - name: ChargeXcel charging station power
         unique_id: chargexcel_charging_station_power
         unit_of_measurement: W
@@ -138,3 +162,12 @@ sensor:
     unit_prefix: k
     round: 3
     method: left
+
+# The car's energy since midnight, as a live sensor you can put in an alert
+# ("charged 18.4 kWh today"). Resets at midnight.
+utility_meter:
+  chargexcel_charging_station_energy_today:
+    name: ChargeXcel charging station energy today
+    unique_id: chargexcel_charging_station_energy_today
+    source: sensor.chargexcel_charging_station_energy
+    cycle: daily

@@ -1,0 +1,99 @@
+blueprint:
+  name: ChargeXcel - tell me when the car stops charging
+  description: >-
+    Sends a notification when the car stops drawing power, with how much
+    energy went into it today and, if you use the cost add-on, what that cost.
+    It stays quiet when ChargeXcel itself paused charging; use the "charging is
+    paused" blueprint for that.
+
+
+    Needs the ChargeXcel package (chargexcel.yaml) and the Home Assistant app
+    on the device. The cost line needs chargexcel_cost.yaml.
+  domain: automation
+  source_url: https://github.com/evpowershare/chargexcel-dlm-contract/blob/main/home-assistant/blueprints/chargexcel_car_stopped_alert.yaml
+  input:
+    notify_device:
+      name: Phone or tablet
+      description: A device with the Home Assistant app installed.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    stopped_for:
+      name: Count it as stopped after
+      description: >-
+        How long the car must draw nothing before you're told. With solar
+        charging, a passing cloud can stop the car for a while; make this
+        longer if that sends you alerts you don't want.
+      default:
+        minutes: 5
+      selector:
+        duration: {}
+    current_sensor:
+      name: Charging station current
+      default: sensor.chargexcel_charging_station_current
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    status_sensor:
+      name: ChargeXcel status sensor
+      default: sensor.chargexcel_status
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    energy_today:
+      name: Car energy today
+      default: sensor.chargexcel_charging_station_energy_today
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    cost_today:
+      name: Car charging cost today (optional)
+      default: sensor.chargexcel_charging_cost_today
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: numeric_state
+    entity_id: !input current_sensor
+    below: 1
+    for: !input stopped_for
+
+variables:
+  status_sensor: !input status_sensor
+  energy_today: !input energy_today
+  cost_today: !input cost_today
+
+conditions:
+  # Only after real charging (not, say, Home Assistant restarting).
+  - condition: template
+    value_template: >-
+      {{ trigger.from_state is not none
+         and trigger.from_state.state | float(0) >= 1 }}
+  # A pause by ChargeXcel has its own alert.
+  - condition: template
+    value_template: "{{ states(status_sensor) == 'Charging allowed' }}"
+
+actions:
+  - domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: The car stopped charging
+    message: >-
+      {% set kwh = states(energy_today) | float(none) %}
+      {% set cost = states(cost_today) | float(none) %}
+      {% set unit = state_attr(cost_today, 'unit_of_measurement') %}
+      {% if kwh is none %}ChargeXcel saw the car stop drawing power.
+      {%- else %}{{ '%.1f' | format(kwh) }} kWh into the car today
+        {%- if cost is not none -%}
+          , {{ ('$%.2f' | format(cost)) if unit == 'USD' else ('%.2f %s' | format(cost, unit)) }}
+        {%- endif %}.
+      {%- endif %}

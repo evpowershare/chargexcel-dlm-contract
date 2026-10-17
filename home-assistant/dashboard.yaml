@@ -28,7 +28,7 @@ views:
     dense_section_placement: true
     badges:
       - type: entity
-        entity: sensor.chargexcel_safety_state
+        entity: sensor.chargexcel_status
         name: ChargeXcel
         show_name: true
         show_state: true
@@ -83,18 +83,18 @@ views:
           - type: conditional
             conditions:
               - condition: state
-                entity: sensor.chargexcel_safety_state
-                state_not: RUNNING
+                entity: sensor.chargexcel_status
+                state_not: Charging allowed
             card:
               type: tile
-              entity: sensor.chargexcel_safety_state
+              entity: sensor.chargexcel_status
               name: Needs attention
               icon: mdi:alert
               color: red
               grid_options:
                 columns: 12
           - type: tile
-            entity: sensor.chargexcel_safety_state
+            entity: sensor.chargexcel_status
             name: Charging state
             icon: mdi:shield-check
             color: green
@@ -144,7 +144,7 @@ views:
             grid_options:
               columns: 12
             entities:
-              - entity: sensor.chargexcel_safety_state
+              - entity: sensor.chargexcel_status
                 name: State
               - entity: binary_sensor.chargexcel_relay_closed
                 name: Charger power

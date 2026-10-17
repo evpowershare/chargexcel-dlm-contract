@@ -1,0 +1,82 @@
+# What charging the car costs -- an optional add-on to chargexcel.yaml.
+#
+# Copy this file into the same packages folder as chargexcel.yaml and restart
+# Home Assistant. It needs nothing from ChargeXcel beyond chargexcel.yaml.
+#
+# It prices the car's power by time of day, so a time-of-use plan is counted
+# the way your utility bills it. The example below is PG&E's EV2-A plan
+# (2026 prices). Edit the two marked places for your own plan:
+#
+#   1. HOURS  -- in "ChargeXcel rate period": which hours are Peak and
+#                Part peak (everything else is Off peak). A flat-rate plan can
+#                simply return 'Off peak' always.
+#   2. PRICES -- in "ChargeXcel electricity price": the price per kWh for each
+#                period, summer and winter. Change "USD" to your currency in
+#                the three unit lines if you are not billed in dollars.
+#
+# What you get:
+#   sensor.chargexcel_rate_period            Peak / Part peak / Off peak
+#   sensor.chargexcel_electricity_price      price per kWh right now
+#   sensor.chargexcel_charging_cost_rate     what charging costs per hour, now
+#   sensor.chargexcel_charging_cost          running total, for cards and charts
+#   sensor.chargexcel_charging_cost_today    since midnight, for alerts
+#
+# The cost covers the charging station only. It starts from zero the day you
+# add it.
+
+template:
+  - sensor:
+      - name: ChargeXcel rate period
+        unique_id: chargexcel_rate_period
+        icon: mdi:clock-time-four-outline
+        # 1. HOURS (24-hour clock). EV2-A: Peak 4 pm-9 pm; Part peak 3 pm-4 pm
+        #    and 9 pm-midnight; Off peak midnight-3 pm. Same all year.
+        state: >-
+          {% set h = now().hour %}
+          {% if 16 <= h < 21 %}Peak
+          {% elif h == 15 or h >= 21 %}Part peak
+          {% else %}Off peak
+          {% endif %}
+
+      - name: ChargeXcel electricity price
+        unique_id: chargexcel_electricity_price
+        icon: mdi:cash-clock
+        unit_of_measurement: USD/kWh
+        state_class: measurement
+        # 2. PRICES per kWh. EV2-A: summer is June to September.
+        state: >-
+          {% set summer = now().month in [6, 7, 8, 9] %}
+          {% set price = {
+               'Peak':      0.53809 if summer else 0.41099,
+               'Part peak': 0.42760 if summer else 0.39428,
+               'Off peak':  0.22558} %}
+          {{ price[states('sensor.chargexcel_rate_period')] }}
+
+      # Car power (kW) x price now. Zero whenever the car isn't drawing (the
+      # charging-station power sensor already ignores the idle sensor noise).
+      - name: ChargeXcel charging cost rate
+        unique_id: chargexcel_charging_cost_rate
+        icon: mdi:cash-fast
+        unit_of_measurement: USD/h
+        state_class: measurement
+        availability: >-
+          {{ has_value('sensor.chargexcel_charging_station_power')
+             and has_value('sensor.chargexcel_electricity_price') }}
+        state: >-
+          {{ (states('sensor.chargexcel_charging_station_power') | float / 1000
+              * states('sensor.chargexcel_electricity_price') | float) | round(4) }}
+
+sensor:
+  - platform: integration
+    name: ChargeXcel charging cost
+    unique_id: chargexcel_charging_cost
+    source: sensor.chargexcel_charging_cost_rate
+    round: 2
+    method: left
+
+utility_meter:
+  chargexcel_charging_cost_today:
+    name: ChargeXcel charging cost today
+    unique_id: chargexcel_charging_cost_today
+    source: sensor.chargexcel_charging_cost
+    cycle: daily

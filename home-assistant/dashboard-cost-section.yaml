@@ -1,0 +1,66 @@
+# A "What charging costs" section for the ready-made dashboard (dashboard.yaml).
+# Needs chargexcel_cost.yaml as well as chargexcel.yaml.
+#
+# To add it: open the dashboard, click the pencil, then the three dots ->
+# Raw configuration editor. Paste everything below this comment block at the
+# end of the "sections:" list (same indentation as the other "- type: grid"
+# sections), then save.
+#
+# The cost cards use Home Assistant's long-term statistics, so they fill in
+# over the first week after you add the cost add-on.
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: What charging costs
+            icon: mdi:cash
+          - type: tile
+            entity: sensor.chargexcel_rate_period
+            name: Rate now
+            icon: mdi:clock-time-four-outline
+            color: blue
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.chargexcel_electricity_price
+            name: Price per kWh
+            icon: mdi:cash-clock
+            color: blue
+            grid_options:
+              columns: 6
+          - type: statistic
+            entity: sensor.chargexcel_charging_cost
+            name: Cost today
+            icon: mdi:cash
+            stat_type: change
+            period:
+              calendar:
+                period: day
+            grid_options:
+              columns: 6
+              rows: 2
+          - type: statistic
+            entity: sensor.chargexcel_charging_cost
+            name: Cost, 7 days
+            icon: mdi:calendar-week
+            stat_type: change
+            period:
+              rolling_window:
+                duration:
+                  days: 7
+            grid_options:
+              columns: 6
+              rows: 2
+          - type: statistics-graph
+            title: Charging cost per day
+            chart_type: bar
+            period: day
+            days_to_show: 7
+            stat_types:
+              - change
+            hide_legend: true
+            entities:
+              - sensor.chargexcel_charging_cost
+            grid_options:
+              columns: 12
+              rows: 3
